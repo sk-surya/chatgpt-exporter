@@ -99,9 +99,10 @@
       el.append(dot, label);
       if (key === "throttle") {
         // status pill, not a session chip: always rightmost, visually distinct;
-        // click opens the live throttle editor
+        // click opens the live throttle editor. The account badge (id below)
+        // owns the auto-margin when present, regardless of creation order.
         el.style.order = "99";
-        el.style.marginLeft = "auto";
+        el.style.marginLeft = this.chipsEl.querySelector("#cge-acc") ? "0" : "auto";
         el.style.background = "transparent";
         el.style.border = "1px solid #475569";
         el.style.color = "#e2e8f0";
@@ -313,13 +314,18 @@
     return;
   }
 
-  // Account badge, bottom left above the taskbar: shows which account this
-  // run (and its cache) is bound to.
+  // Account badge: a pill inside the taskbar (just left of the throttle pill)
+  // showing which account this run and its cache are bound to. Lives in the
+  // bar so it can never overlap the log console when it opens or resizes.
   {
     const badge = document.createElement("div");
-    badge.style.cssText = "position:fixed;left:12px;bottom:56px;z-index:100000;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:5px 10px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#64748b";
-    badge.textContent = `account: ${accountId}`;
-    overlay.appendChild(badge);
+    badge.id = "cge-acc";
+    badge.style.cssText = "order:98;margin-left:auto;padding:5px 10px;border-radius:6px;border:1px solid #334155;font-size:11px;color:#64748b;white-space:nowrap;flex-shrink:0";
+    badge.textContent = `acc ${String(accountId).slice(0, 12)}`;
+    badge.title = `account: ${accountId}`;
+    ui.chipsEl.appendChild(badge);
+    // badge takes over the auto-margin; throttle pill stays hard right
+    if (ui.chips.throttle) ui.chips.throttle.el.style.marginLeft = "0";
   }
 
   // ── API helper ──────────────────────────────────────────────────────
@@ -506,7 +512,12 @@
       // ±25% jitter: evenly-metronomed requests are bot-obvious and can align
       // with the window edge; humans are bursty-irregular.
       localStorage.setItem(LS_SLOT, slot + getDelay() * (0.75 + Math.random() * 0.5));
-      if (slot > now) await sleep(slot - now);
+      // Sleep in short chunks and re-check: "skip wait" clears the slot queue,
+      // and a whole-span sleep would ignore that until its original wake time.
+      while (Date.now() < slot) {
+        await sleep(Math.min(1000, slot - Date.now()));
+        if (lsNum(LS_SLOT) < slot) break; // queue was cleared manually
+      }
       if (Date.now() < getPause()) continue; // a pause started while we waited
       return;
     }
