@@ -37,6 +37,7 @@ globalThis.document = {
   body: { appendChild: () => {} },
   getElementById: () => null,
   addEventListener: () => {},
+  activeElement: null,
 };
 globalThis.window = { innerHeight: 900 };
 // in-memory IndexedDB stub: same API shape, backed by Maps

@@ -53,6 +53,15 @@
         padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">⬇ save partial (0)</button>
       <button id="cge-clearcache" style="background:#1e293b;border:1px solid #7f1d1d;border-radius:8px;
         padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#fca5a5;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">✕ clear cache</button>
+    </div>
+    <div id="cge-tuner" style="display:none;position:fixed;right:12px;bottom:56px;z-index:100001;background:#0f172a;border:1px solid #475569;border-radius:8px;
+      padding:12px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;box-shadow:0 8px 24px rgba(0,0,0,0.5);width:300px">
+      <div style="font-weight:600;margin-bottom:8px;color:#f8fafc">Throttle tuner (live)</div>
+      <label style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">delay ms/req
+        <input id="cge-t-delay" type="number" step="500" min="250" style="width:90px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:4px;padding:3px 6px"></label>
+      <label style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">min pause s
+        <input id="cge-t-pause" type="number" step="5" min="5" style="width:90px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:4px;padding:3px 6px"></label>
+      <div id="cge-t-info" style="color:#64748b;margin-top:8px;line-height:1.6"></div>
     </div>`;
   document.body.appendChild(overlay);
 
@@ -82,14 +91,18 @@
       label.textContent = name;
       el.append(dot, label);
       if (key === "throttle") {
-        // status pill, not a session chip: always rightmost, visually distinct
+        // status pill, not a session chip: always rightmost, visually distinct;
+        // click opens the live throttle editor
         el.style.order = "99";
         el.style.marginLeft = "auto";
-        el.style.cursor = "default";
         el.style.background = "transparent";
         el.style.border = "1px solid #475569";
         el.style.color = "#e2e8f0";
         el.style.fontWeight = "600";
+        el.addEventListener("click", () => {
+          const panel = overlay.querySelector("#cge-tuner");
+          panel.style.display = panel.style.display === "none" ? "block" : "none";
+        });
       } else {
         el.style.order = key === "global" ? "0" : "1"; // LOG first, workers after
         el.addEventListener("click", () => this.showLog(key));
@@ -204,6 +217,10 @@
   const LS_PAUSE = "cge:pausedUntil", LS_DELAY = "cge:delayMs", LS_SLOT = "cge:nextSlot";
   const LS_429S = "cge:429s", LS_OK = "cge:okSinceLimit";
   const LS_FLOOR = "cge:floorMs", LS_FLOOR_TS = "cge:floorTs";
+  const LS_EPOCH = "cge:epoch", LS_SAMPLES = "cge:rateSamples";
+  const LS_MINPAUSE = "cge:minPauseMs";
+  // stop on first 429, wait at least 1min 5s before testing again (live-editable)
+  const getMinPause = () => lsNum(LS_MINPAUSE) || 65000;
   const lsNum = (k) => Number(localStorage.getItem(k)) || 0;
   const getDelay = () => Math.max(DELAY, lsNum(LS_DELAY) || DELAY);
   const setDelay = (v) => localStorage.setItem(LS_DELAY, Math.round(v));
@@ -218,6 +235,29 @@
     arr.push(now);
     localStorage.setItem(LS_429S, JSON.stringify(arr));
     return arr.length; // strikes in the last 5 min
+  }
+
+  // ── Refill-rate learner ─────────────────────────────────────────────
+  // Each stretch between 429s is an experiment: the server accepted N requests
+  // over T ms, i.e. one sample of the true refill rate. Aggregate the last few
+  // samples (median) and pace slightly slower than the measured rate. This
+  // MEASURES the window instead of blindly climbing until the 429s stop.
+  // epoch = { start, ok } for the current stretch.
+  function epochOk() {
+    const e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null") || { start: Date.now(), ok: 0 };
+    e.ok++;
+    localStorage.setItem(LS_EPOCH, JSON.stringify(e));
+  }
+  function epochStrike() {
+    const e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null");
+    localStorage.setItem(LS_EPOCH, JSON.stringify({ start: Date.now(), ok: 0 }));
+    if (!e || e.ok < 2) return null; // too little data to be a sample
+    const perReqMs = (Date.now() - e.start) / e.ok;
+    const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]").slice(-4);
+    samples.push(Math.round(perReqMs));
+    localStorage.setItem(LS_SAMPLES, JSON.stringify(samples));
+    const sorted = [...samples].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)]; // median accepted pace
   }
 
   // Live throttle ticker: pinned to the far right of the taskbar, pure status
@@ -264,6 +304,34 @@
   });
 
 
+  // Throttle tuner: inputs write straight to the shared localStorage state, so
+  // edits apply to the very next request (all tabs); ticker refreshes the
+  // readouts and the learner's current knowledge.
+  {
+    const dEl = overlay.querySelector("#cge-t-delay");
+    const pEl = overlay.querySelector("#cge-t-pause");
+    const infoEl = overlay.querySelector("#cge-t-info");
+    dEl.addEventListener("change", () => {
+      setDelay(Math.max(250, Number(dEl.value) || DELAY));
+      localStorage.setItem(LS_FLOOR, 0); // manual edit overrides the learned floor
+      ui.log(`Tuner: delay set to ${getDelay()}ms/req`);
+    });
+    pEl.addEventListener("change", () => {
+      localStorage.setItem(LS_MINPAUSE, Math.max(5000, (Number(pEl.value) || 65) * 1000));
+      ui.log(`Tuner: min pause set to ${getMinPause() / 1000}s`);
+    });
+    setInterval(() => {
+      if (document.activeElement !== dEl) dEl.value = getDelay();
+      if (document.activeElement !== pEl) pEl.value = Math.round(getMinPause() / 1000);
+      const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]");
+      const e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null");
+      infoEl.textContent =
+        `learned samples (s/req): ${samples.map((s) => Math.round(s / 1000)).join(", ") || "none yet"}\n` +
+        `current stretch: ${e ? `${e.ok} ok over ${Math.round((Date.now() - e.start) / 1000)}s` : "—"}\n` +
+        `floor: ${lsNum(LS_FLOOR) ? Math.round(lsNum(LS_FLOOR) / 1000) + "s" : "none"}`;
+    }, 1000);
+  }
+
   // Cross-tab pacer: reserve the next request slot in localStorage. Two tabs
   // can rarely race for the same slot; worst case is one extra request, which
   // the backoff absorbs. ponytail: a lock-free reservation, real locking needs a SharedWorker.
@@ -293,6 +361,7 @@
         // requests and turns the run into a 429 sawtooth.
         const okStreak = lsNum(LS_OK) + 1;
         localStorage.setItem(LS_OK, okStreak);
+        epochOk();
         // Don't decay below a recently-punished delay — a quota that refills
         // ~3/min will 429 the same rate again; the floor expires after 15 min
         // so we still re-probe once the penalty window has really passed.
@@ -306,18 +375,27 @@
         if (Date.now() >= getPause()) {
           localStorage.setItem(LS_OK, 0);
           const strikes = recordStrike();
-          // Multiplicative climb: additive steps need many strike-pause cycles
-          // to reach a low tolerated rate; ×1.5 discovers it in 2-3 strikes.
-          const d = Math.min(Math.max(getDelay() * 1.5, getDelay() + 2000), 60000);
+          // Learn from the stretch that just ended: how fast did the server
+          // actually accept requests? Pace 20% slower than that measurement.
+          const measured = epochStrike();
+          let d;
+          if (measured) {
+            d = Math.min(Math.round(measured * 1.2), 120000);
+            ui.log(`Learned: server accepted ~1 req/${Math.round(measured / 1000)}s last stretch — pacing at ${Math.round(d / 1000)}s/req`);
+          } else {
+            // No measurement yet (429 right away): climb multiplicatively.
+            d = Math.min(Math.max(getDelay() * 1.5, getDelay() + 2000), 120000);
+          }
           setDelay(d);
           // The rate we were just running at is proven too fast — floor there.
           localStorage.setItem(LS_FLOOR, Math.round(d));
           localStorage.setItem(LS_FLOOR_TS, Date.now());
           const retryAfterRaw = resp.headers.get("Retry-After");
           const retryAfter = parseInt(retryAfterRaw) * 1000;
-          // Repeated strikes inside the window mean the quota is drained —
-          // wait longer for refill instead of nibbling at it every 30s.
-          const backoff = Math.min(retryAfter || 30000 * strikes, 300000);
+          // STOP on the first 429: pause at least MIN_PAUSE (1min 5s) so the
+          // window genuinely refills before we test it again; repeated strikes
+          // stretch it further.
+          const backoff = Math.min(Math.max(retryAfter || 0, getMinPause() * strikes), 300000);
           const body = await resp.text().catch(() => "");
           ui.log(`HTTP ${resp.status} details — Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
           localStorage.setItem(LS_PAUSE, Date.now() + backoff);
