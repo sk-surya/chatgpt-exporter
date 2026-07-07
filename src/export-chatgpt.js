@@ -62,8 +62,8 @@
       <label style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">min pause s
         <input id="cge-t-pause" type="number" step="5" min="5" style="width:90px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:4px;padding:3px 6px"></label>
       <div style="display:flex;gap:6px;margin-top:8px">
-        <button id="cge-t-fire" style="flex:1;background:#1e3a2f;border:1px solid #14532d;border-radius:4px;color:#86efac;padding:4px 8px;cursor:pointer;font:inherit">fire now</button>
-        <button id="cge-t-hold" style="flex:1;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;padding:4px 8px;cursor:pointer;font:inherit">hold</button>
+        <button id="cge-t-fire" title="skip the wait, fire next request now" style="flex:1;background:#1e3a2f;border:1px solid #14532d;border-radius:4px;color:#86efac;padding:4px 8px;cursor:pointer;font:inherit">⏭ skip wait</button>
+        <button id="cge-t-hold" title="pause / resume all requests" style="flex:1;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;padding:4px 8px;cursor:pointer;font:inherit">⏸ pause</button>
       </div>
       <div id="cge-t-info" style="color:#64748b;margin-top:8px;line-height:1.6"></div>
     </div>`;
@@ -341,12 +341,12 @@
       const holding = getPause() > Date.now() + 86400000;
       if (holding) {
         localStorage.setItem(LS_PAUSE, 0);
-        holdBtn.textContent = "hold";
-        ui.log("Tuner: hold released");
+        holdBtn.textContent = "⏸ pause";
+        ui.log("Tuner: resumed");
       } else {
         localStorage.setItem(LS_PAUSE, Date.now() + 365 * 86400000);
-        holdBtn.textContent = "release";
-        ui.log("Tuner: holding all requests until released");
+        holdBtn.textContent = "▶ resume";
+        ui.log("Tuner: paused all requests until resumed");
       }
     });
     setInterval(() => {
