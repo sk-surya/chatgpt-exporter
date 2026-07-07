@@ -7,7 +7,7 @@
   const VERSION = "v1.0.0";
   const API = "/backend-api";
   const PAGE_SIZE = 100;
-  const DELAY = 250;
+  const DELAY = 1200; // base ms between requests, account-wide — human-ish pace; the site shares this quota
   const CONCURRENCY = 4; // parallel conversation downloads; 429s are retried with backoff
   const DEVICE_ID = crypto.randomUUID();
 
@@ -22,6 +22,7 @@
 
   // Shared progress state for the ETA clock and partial-save button
   const stats = { done: 0, total: 0, startedAt: 0, entries: null };
+  let requestRestart = null; // set once the download pass starts
 
   // ── UI overlay ──────────────────────────────────────────────────────
 
@@ -47,8 +48,12 @@
     </div>
     <div id="cge-eta" style="position:fixed;top:12px;right:12px;z-index:100000;background:#0f172a;border:1px solid #334155;border-radius:8px;
       padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;text-align:right;box-shadow:0 4px 16px rgba(0,0,0,0.4)">ETA —</div>
-    <button id="cge-partial" style="position:fixed;top:12px;left:12px;z-index:100000;background:#1e293b;border:1px solid #334155;border-radius:8px;
-      padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">⬇ save partial (0)</button>`;
+    <div style="position:fixed;top:12px;left:12px;z-index:100000;display:flex;gap:8px">
+      <button id="cge-partial" style="background:#1e293b;border:1px solid #334155;border-radius:8px;
+        padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">⬇ save partial (0)</button>
+      <button id="cge-clearcache" style="background:#1e293b;border:1px solid #7f1d1d;border-radius:8px;
+        padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#fca5a5;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">✕ clear cache</button>
+    </div>`;
   document.body.appendChild(overlay);
 
   const ui = {
@@ -118,6 +123,8 @@
       const c = this.chip(key, name);
       const time = new Date().toTimeString().slice(0, 8);
       c.buffer += `[${time}] ${msg}\n`;
+      // Cap the buffer — re-rendering an ever-growing <pre> janks the page on long runs
+      if (c.buffer.length > 200000) c.buffer = c.buffer.slice(-100000);
       if (this.activeLogKey === key) {
         this.logEl.textContent = c.buffer;
         this.logEl.scrollTop = this.logEl.scrollHeight;
@@ -255,6 +262,7 @@
     URL.revokeObjectURL(a.href);
   });
 
+
   // Cross-tab pacer: reserve the next request slot in localStorage. Two tabs
   // can rarely race for the same slot; worst case is one extra request, which
   // the backoff absorbs. ponytail: a lock-free reservation, real locking needs a SharedWorker.
@@ -318,6 +326,61 @@
       headers: { ...HEADERS, Authorization: `Bearer ${token}` },
     });
     return resp.json();
+  }
+
+  // ── IndexedDB cache ─────────────────────────────────────────────────
+  // Conversations AND downloaded files persist across runs/reloads, so a
+  // restart spends zero rate-limit quota on anything already fetched.
+  const idb = await new Promise((resolve) => {
+    const req = indexedDB.open("chatgpt-exporter-cache", 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore("convos");
+      req.result.createObjectStore("files");
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => { ui.log("IndexedDB unavailable — running without cache"); resolve(null); };
+  });
+  const cacheGet = (store, key) => new Promise((resolve) => {
+    if (!idb) return resolve(undefined);
+    const req = idb.transaction(store).objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(undefined);
+  });
+  const cachePut = (store, key, value) => new Promise((resolve) => {
+    if (!idb) return resolve();
+    const tx = idb.transaction(store, "readwrite");
+    tx.objectStore(store).put(value, key);
+    tx.oncomplete = tx.onerror = () => resolve();
+  });
+  let cacheHits = 0, fileCacheHits = 0;
+
+  // Clear cache: confirmed, wipes IndexedDB, then restarts the download from #1.
+  overlay.querySelector("#cge-clearcache").addEventListener("click", async () => {
+    if (!confirm("Clear the exporter cache and re-download everything from scratch?")) return;
+    if (!idb) return ui.log("No cache to clear (IndexedDB unavailable)");
+    await Promise.all(["convos", "files"].map((s) => new Promise((resolve) => {
+      const tx = idb.transaction(s, "readwrite");
+      tx.objectStore(s).clear();
+      tx.oncomplete = tx.onerror = () => resolve();
+    })));
+    cacheHits = 0; fileCacheHits = 0;
+    ui.log("Cache cleared — restarting download from #1 in 3s...");
+    await sleep(3000);
+    if (requestRestart) requestRestart();
+    else ui.log("Download not started yet — nothing to restart, fresh fetch will happen naturally");
+  });
+
+  // Cached conversation fetch: reuse when the conversation hasn't been
+  // updated since we cached it (update_time from the list endpoint).
+  async function getConversation(cid, listUpdateTime) {
+    const cached = await cacheGet("convos", cid);
+    if (cached && (!listUpdateTime || cached.cachedUpdateTime >= listUpdateTime)) {
+      cacheHits++;
+      return cached.convo;
+    }
+    const convo = await apiGet(`conversation/${cid}`);
+    await cachePut("convos", cid, { convo, cachedUpdateTime: listUpdateTime || 0 });
+    return convo;
   }
 
   async function apiFetchBinary(url) {
@@ -387,6 +450,9 @@
   }
 
   async function downloadFile(fileId, fallbackName) {
+    // Files are immutable per fileId — cache hit needs no freshness check.
+    const cached = await cacheGet("files", fileId);
+    if (cached) { fileCacheHits++; return cached; }
     const meta = await apiGet(`files/download/${fileId}`);
     if (!meta.download_url) throw new Error("No download_url");
     const { data, contentType } = await apiFetchBinary(meta.download_url);
@@ -397,7 +463,9 @@
       const ext = MIME_TO_EXT[mime];
       if (ext) filename += ext;
     }
-    return { filename, data };
+    const result = { filename, data };
+    await cachePut("files", fileId, result);
+    return result;
   }
 
   function deduplicateFilename(name, usedNames) {
@@ -473,14 +541,14 @@
   stats.entries = zipEntries; // live reference — partial save zips whatever is here
 
   async function processConversation(i, workerId) {
-    const { id: cid, title: rawTitle } = conversations[i];
+    const { id: cid, title: rawTitle, update_time: updateTime } = conversations[i];
     const title = rawTitle || "Untitled";
     const fname = `${sanitize(title)}_${cid.slice(0, 8)}`;
     ui.worker(workerId, `#${i + 1} ${title.slice(0, 30)}`, "green");
     ui.workerLog(workerId, `start #${i + 1} "${title.slice(0, 60)}"`);
 
     try {
-      const convo = await apiGet(`conversation/${cid}`);
+      const convo = await getConversation(cid, updateTime ? Date.parse(updateTime) || Number(updateTime) : 0);
       const jsonStr = JSON.stringify(convo, null, 2);
 
       // Extract and download file references
@@ -519,8 +587,20 @@
     ui.set(`Downloading ${done} of ${total} (${pct}%)`, pct, title);
   }
 
-  // Worker pool: CONCURRENCY conversations in flight at once
+  // Worker pool: CONCURRENCY conversations in flight at once. A cache-clear
+  // resets `next` to 0 — in-flight items finish, then workers sweep from #1
+  // (already-done indices refill zipEntries/downloaded from the fresh fetch).
   let next = 0;
+  requestRestart = () => {
+    next = 0;
+    done = 0;
+    failed = 0;
+    zipEntries.length = 0;
+    downloaded.fill(undefined);
+    stats.done = 0;
+    stats.startedAt = Date.now();
+    ui.log("Restarting download pass from #1 (cache is empty, full re-fetch)");
+  };
   ui.log(`Starting ${Math.min(CONCURRENCY, total)} workers for ${total} conversations`);
   await Promise.all(
     Array.from({ length: Math.min(CONCURRENCY, total) }, async (_, w) => {
@@ -528,6 +608,7 @@
       ui.worker(w, "idle", "gray");
     })
   );
+  requestRestart = null; // pool has drained; too late to restart
   ui.log(`Download pass done: ${total - failed} ok, ${failed} failed`);
 
   // ── Pass 2: Generate HTML with sidebar ──────────────────────────────
@@ -581,6 +662,7 @@
   let doneMsg = `Done! Exported ${succeeded}/${total} conversations.`;
   if (failed) doneMsg += ` (${failed} failed)`;
   if (totalFiles) doneMsg += ` ${totalFiles - failedFiles}/${totalFiles} files downloaded.`;
+  if (cacheHits || fileCacheHits) doneMsg += ` (${cacheHits} conversations + ${fileCacheHits} files from cache)`;
   ui.done(doneMsg);
 
   // ── Markdown converter ──────────────────────────────────────────────

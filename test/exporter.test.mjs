@@ -39,6 +39,29 @@ globalThis.document = {
   addEventListener: () => {},
 };
 globalThis.window = { innerHeight: 900 };
+// in-memory IndexedDB stub: same API shape, backed by Maps
+const idbStores = { convos: new Map(), files: new Map() };
+function idbReq(result) { const r = { result }; setImmediate(() => r.onsuccess?.()); return r; }
+globalThis.indexedDB = {
+  open: () => {
+    const r = {
+      result: {
+        createObjectStore: () => {},
+        transaction: (store) => ({
+          objectStore: (s = store) => ({
+            get: (k) => idbReq(idbStores[s].get(k)),
+            put: (v, k) => idbStores[s].set(k, v),
+            clear: () => idbStores[s].clear(),
+          }),
+          set oncomplete(f) { setImmediate(f); },
+          onerror: null,
+        }),
+      },
+    };
+    setImmediate(() => { r.onupgradeneeded?.(); r.onsuccess?.(); });
+    return r;
+  },
+};
 globalThis.URL.createObjectURL = (blob) => { zipBlob = blob; return "blob:fake"; };
 globalThis.URL.revokeObjectURL = () => {};
 const lsStore = new Map();
@@ -93,7 +116,8 @@ globalThis.fetch = async (url, options = {}) => {
     if (i === 5 && !served429) { served429 = true; return json({}, 429, { "retry-after": "1" }); }
     inFlight++;
     maxInFlight = Math.max(maxInFlight, inFlight);
-    await new Promise((r) => setTimeout(r, 300));
+    // slower than the pacer interval so overlap (parallelism) is observable
+    await new Promise((r) => setTimeout(r, 3000));
     inFlight--;
     return json(convoPayload(i));
   }
