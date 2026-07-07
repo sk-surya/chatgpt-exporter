@@ -724,7 +724,11 @@
       const fileRefs = extractFileReferences(convo);
       totalFiles += fileRefs.length;
       zipEntries.push({ path: `json/${fname}.json`, data: jsonStr });
-      downloaded[i] = { fname, title, convo, fileMap: {}, fileRefs };
+      // Markdown lands with the text pass too, so a partial save is readable;
+      // convos with files get their markdown regenerated with links in pass 3.
+      const mdEntry = { path: `markdown/${fname}.md`, data: toMarkdown(convo, {}) };
+      zipEntries.push(mdEntry);
+      downloaded[i] = { fname, title, convo, fileMap: {}, fileRefs, mdEntry };
       ui.workerLog(workerId, `done #${i + 1}${fileRefs.length ? ` (${fileRefs.length} files queued)` : ""}`);
     } catch (e) {
       failed++;
@@ -804,7 +808,9 @@
   const allConvos = succeededConvos.map((d) => ({ fname: d.fname, title: d.title }));
 
   for (const d of succeededConvos) {
-    zipEntries.push({ path: `markdown/${d.fname}.md`, data: toMarkdown(d.convo, d.fileMap) });
+    // regenerate markdown in place with the real file links (entry was
+    // already pushed in pass 1 so partial saves stay readable)
+    if (Object.keys(d.fileMap).length) d.mdEntry.data = toMarkdown(d.convo, d.fileMap);
     const htmlStr = toHtml(d.convo, d.fileMap, allConvos, d.fname);
     zipEntries.push({ path: `html/${d.fname}.html`, data: htmlStr });
   }
