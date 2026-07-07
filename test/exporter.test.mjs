@@ -16,6 +16,11 @@ function fakeEl() {
     addEventListener: () => {},
     appendChild: () => {},
     append: () => {},
+    insertBefore: () => {},
+    closest: () => fakeEl(),
+    getBoundingClientRect: () => ({ bottom: 0 }),
+    get parentElement() { return fakeEl(); },
+    offsetHeight: 150,
     click() { this.clicked = true; downloadedZipHref = this.href; },
     set download(v) { zipName = v; },
   };
@@ -31,7 +36,9 @@ globalThis.document = {
   },
   body: { appendChild: () => {} },
   getElementById: () => null,
+  addEventListener: () => {},
 };
+globalThis.window = { innerHeight: 900 };
 globalThis.URL.createObjectURL = (blob) => { zipBlob = blob; return "blob:fake"; };
 globalThis.URL.revokeObjectURL = () => {};
 const lsStore = new Map();

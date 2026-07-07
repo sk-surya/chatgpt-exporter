@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 (async () => {
-  const VERSION = "v6-crosstab-throttle";
+  const VERSION = "v1.0.0";
   const API = "/backend-api";
   const PAGE_SIZE = 100;
   const DELAY = 250;
@@ -19,6 +19,9 @@
   };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Shared progress state for the ETA clock and partial-save button
+  const stats = { done: 0, total: 0, startedAt: 0, entries: null };
 
   // ── UI overlay ──────────────────────────────────────────────────────
 
@@ -41,7 +44,11 @@
       font-family:ui-monospace,Menlo,monospace;box-shadow:0 -10px 30px rgba(0,0,0,0.5)">
       <pre id="cge-log" style="display:none;margin:0;height:150px;overflow-y:auto;background:#020617;border-bottom:1px solid #1e293b;padding:8px 16px;font-size:11px;line-height:1.5;color:#94a3b8;white-space:pre-wrap;word-break:break-all"></pre>
       <div id="cge-chips" style="display:flex;gap:8px;align-items:center;padding:8px 16px;overflow-x:auto"></div>
-    </div>`;
+    </div>
+    <div id="cge-eta" style="position:fixed;top:12px;right:12px;z-index:100000;background:#0f172a;border:1px solid #334155;border-radius:8px;
+      padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;text-align:right;box-shadow:0 4px 16px rgba(0,0,0,0.4)">ETA —</div>
+    <button id="cge-partial" style="position:fixed;top:12px;left:12px;z-index:100000;background:#1e293b;border:1px solid #334155;border-radius:8px;
+      padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">⬇ save partial (0)</button>`;
   document.body.appendChild(overlay);
 
   const ui = {
@@ -57,7 +64,8 @@
       if (pct != null) this.bar.style.width = pct + "%";
       if (detail) this.detail.textContent = detail;
     },
-    // Taskbar chip: colored dot + label. Click toggles that chip's log view.
+    // Taskbar chip: colored dot + label. Click toggles that chip's log view —
+    // except the throttle chip, which is a pure status display pinned right.
     chip(key, name) {
       if (this.chips[key]) return this.chips[key];
       const el = document.createElement("div");
@@ -68,7 +76,12 @@
       label.style.cssText = "overflow:hidden;text-overflow:ellipsis";
       label.textContent = name;
       el.append(dot, label);
-      el.addEventListener("click", () => this.showLog(key));
+      if (key === "throttle") {
+        el.style.marginLeft = "auto";
+        el.style.cursor = "default";
+      } else {
+        el.addEventListener("click", () => this.showLog(key));
+      }
       this.chipsEl.appendChild(el);
       const chip = { el, dot, label, buffer: "" };
       this.chips[key] = chip;
@@ -110,9 +123,6 @@
       this.logTo(`w${id}`, `W${id + 1}`, msg);
       this.logTo("global", "LOG", `[W${id + 1}] ${msg}`);
     },
-    throttleStatus(text, bad) {
-      this.setChip("throttle", "throttle", text, bad ? "red" : "green");
-    },
     log(msg) {
       this.logTo("global", "LOG", msg);
     },
@@ -131,11 +141,32 @@
       overlay.addEventListener("click", () => overlay.remove());
     },
   };
-  // fixed chip order: global log, then throttle, then workers
+  // fixed chip order: global log first; throttle chip is created last so its
+  // margin-left:auto pins it to the far right of the bar.
   ui.setChip("global", "LOG", "LOG", "gray");
-  ui.setChip("throttle", "throttle", `${DELAY}ms/req`, "green");
   overlay.querySelector("#cge-version").textContent = VERSION;
   ui.log(`Exporter ${VERSION} started`);
+
+  // ── Console resize handle ───────────────────────────────────────────
+  // Drag the top edge of the log panel; capped at the popup's lower edge.
+  {
+    const logEl = ui.logEl;
+    const grip = document.createElement("div");
+    grip.style.cssText = "height:6px;cursor:ns-resize;background:#1e293b;border-bottom:1px solid #334155";
+    logEl.parentElement.insertBefore(grip, logEl);
+    let drag = null;
+    grip.addEventListener("mousedown", (e) => {
+      drag = { y: e.clientY, h: logEl.offsetHeight };
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!drag) return;
+      const popupBottom = overlay.querySelector("#cge-status").closest("div").getBoundingClientRect().bottom;
+      const maxH = window.innerHeight - popupBottom - 60; // stop at popup's lower edge
+      logEl.style.height = Math.max(60, Math.min(drag.h + (drag.y - e.clientY), maxH)) + "px";
+    });
+    document.addEventListener("mouseup", () => (drag = null));
+  }
 
   // ── Get token ───────────────────────────────────────────────────────
 
@@ -162,6 +193,49 @@
   const setDelay = (v) => localStorage.setItem(LS_DELAY, Math.round(v));
   const getPause = () => lsNum(LS_PAUSE);
 
+  // Live throttle ticker: pinned to the far right of the taskbar, pure status
+  // (no click console). Counts down pause seconds; reflects other tabs' state too.
+  setInterval(() => {
+    const pauseLeft = getPause() - Date.now();
+    if (pauseLeft > 0) {
+      ui.setChip("throttle", "throttle", `PAUSED ${Math.ceil(pauseLeft / 1000)}s — ${Math.round(getDelay())}ms/req`, "red");
+    } else {
+      const d = getDelay();
+      ui.setChip("throttle", "throttle", `${Math.round(d)}ms/req`, d > DELAY * 4 ? "yellow" : "green");
+    }
+  }, 250);
+
+  // ETA clock (top right): based on observed throughput so far, which already
+  // includes every pause and throttle we actually hit — no rate model needed.
+  const etaEl = overlay.querySelector("#cge-eta");
+  setInterval(() => {
+    if (!stats.total || !stats.done || !stats.startedAt) return;
+    const elapsed = Date.now() - stats.startedAt;
+    const remaining = (elapsed / stats.done) * (stats.total - stats.done);
+    const fmt = (ms) => {
+      const m = Math.round(ms / 60000);
+      return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+    };
+    const doneAt = new Date(Date.now() + remaining);
+    etaEl.textContent = `${stats.done}/${stats.total} — ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
+  }, 1000);
+
+  // Partial save (top left): zips whatever is downloaded so far, any time.
+  const partialBtn = overlay.querySelector("#cge-partial");
+  setInterval(() => {
+    if (stats.entries) partialBtn.textContent = `⬇ save partial (${stats.done})`;
+  }, 1000);
+  partialBtn.addEventListener("click", () => {
+    if (!stats.entries?.length) return;
+    ui.log(`Partial save: zipping ${stats.entries.length} entries (${stats.done} conversations)`);
+    const blob = buildZipBlob(stats.entries);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `chatgpt-export-partial-${stats.done}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
   // Cross-tab pacer: reserve the next request slot in localStorage. Two tabs
   // can rarely race for the same slot; worst case is one extra request, which
   // the backoff absorbs. ponytail: a lock-free reservation, real locking needs a SharedWorker.
@@ -186,9 +260,7 @@
       if (resp.ok) {
         // Recover fast: each success cuts the delay 20%, so after a pause we
         // ramp back to full speed instead of crawling at the punished rate.
-        const d = Math.max(DELAY, getDelay() * 0.8);
-        setDelay(d);
-        ui.throttleStatus(`${Math.round(d)}ms/req`, d > DELAY * 4);
+        setDelay(Math.max(DELAY, getDelay() * 0.8));
         return resp;
       }
       if (resp.status === 429 || resp.status >= 500) {
@@ -205,7 +277,6 @@
           ui.log(`HTTP ${resp.status} details — Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
           localStorage.setItem(LS_PAUSE, Date.now() + backoff);
           ui.set(null, null, `Rate limited (HTTP ${resp.status}), pausing ${Math.round(backoff / 1000)}s...`);
-          ui.throttleStatus(`${Math.round(d)}ms/req PAUSED ${Math.round(backoff / 1000)}s`, true);
           ui.log(`HTTP ${resp.status} — pause ${Math.round(backoff / 1000)}s (all tabs), request delay now ${Math.round(d)}ms (retry ${i + 1})`);
         }
         continue;
@@ -370,6 +441,9 @@
   let done = 0;
   const total = conversations.length;
   const downloaded = new Array(total); // { fname, title, convo, fileMap }, in list order
+  stats.total = total;
+  stats.startedAt = Date.now();
+  stats.entries = zipEntries; // live reference — partial save zips whatever is here
 
   async function processConversation(i, workerId) {
     const { id: cid, title: rawTitle } = conversations[i];
@@ -413,6 +487,7 @@
     }
 
     done++;
+    stats.done = done;
     const pct = Math.round((done / total) * 100);
     ui.set(`Downloading ${done} of ${total} (${pct}%)`, pct, title);
   }
