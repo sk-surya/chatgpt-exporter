@@ -1,0 +1,14 @@
+{
+  "name": "chatgpt-exporter",
+  "version": "1.0.0",
+  "description": "Export all your ChatGPT conversations as JSON + Markdown + HTML in a verified ZIP, from the browser console or a bookmarklet.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/make-bookmarklet.mjs",
+    "test": "node test/exporter.test.mjs src/export-chatgpt.js"
+  },
+  "devDependencies": {
+    "terser": "^5.36.0"
+  }
+}
