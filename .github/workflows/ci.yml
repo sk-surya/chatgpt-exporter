@@ -4,25 +4,77 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    - cron: "0 6 * * 1" # weekly audit — deps can turn vulnerable without a code change
+    - cron: "0 6 * * 1" # weekly — deps can turn vulnerable without a code change
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 20
       - run: npm ci
       - run: npm test
       - run: npm run build
 
-  audit:
+  security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
-      - run: npm audit --audit-level=moderate
+          node-version: 20
+      - run: npm ci
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate
+      - name: Static analysis (CodeQL-lite via osv-scanner)
+        uses: google/osv-scanner-action/osv-scanner-action@v2
+        with:
+          scan-args: --lockfile=package-lock.json
+
+  release:
+    # Auto-tag + GitHub release with the built bookmarklet whenever the
+    # version in package.json changes on main.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Check if version is new
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if git ls-remote --tags origin "v$VERSION" | grep -q .; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build
+        if: steps.version.outputs.new == 'true'
+        run: |
+          npm ci
+          npm run build
+          cp src/export-chatgpt.js dist/export-chatgpt.js
+          cd dist && zip "chatgpt-exporter-v${{ steps.version.outputs.version }}.zip" \
+            bookmarklet.txt export-chatgpt.js
+      - name: Tag and release
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="v${{ steps.version.outputs.version }}"
+          git tag "$V"
+          git push origin "$V"
+          gh release create "$V" \
+            --title "$V" \
+            --generate-notes \
+            dist/bookmarklet.txt \
+            dist/export-chatgpt.js \
+            "dist/chatgpt-exporter-$V.zip"

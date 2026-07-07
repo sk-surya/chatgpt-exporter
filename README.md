@@ -1,5 +1,7 @@
 # ChatGPT Exporter
 
+[![CI](https://github.com/thiscantbeserious/chatgpt-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/thiscantbeserious/chatgpt-exporter/actions/workflows/ci.yml)
+
 Export **all** your ChatGPT conversations as JSON + Markdown + HTML in a verified ZIP — straight from your browser, no server, no token copy-paste. Works with Business/Team/Enterprise accounts (including SSO/Okta).
 
 Originally forked from [ocombe's exporter gist](https://gist.github.com/ocombe/1d7604bd29a91ceb716304ef8b5aa4b5).

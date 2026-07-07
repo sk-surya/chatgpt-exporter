@@ -472,7 +472,15 @@
   }
 
   async function apiFetchBinary(url) {
-    const resp = await fetchWithRetry(url);
+    // Signed CDN URL (files.oaiusercontent.com etc.), not backend-api — it does
+    // not spend the account quota, so skip the pacer; simple retry only.
+    let resp;
+    for (let i = 0; ; i++) {
+      resp = await fetch(url);
+      if (resp.ok) break;
+      if (i >= 2 || (resp.status < 500 && resp.status !== 429)) throw new Error(`HTTP ${resp.status}`);
+      await sleep(3000 * (i + 1));
+    }
     const data = new Uint8Array(await resp.arrayBuffer());
     const contentType = resp.headers.get("content-type") || "";
     return { data, contentType };
@@ -638,31 +646,13 @@
     try {
       const convo = await getConversation(cid, updateTime ? Date.parse(updateTime) || Number(updateTime) : 0);
       const jsonStr = JSON.stringify(convo, null, 2);
-
-      // Extract and download file references
+      // Text first: JSON lands immediately; files are collected into a queue
+      // and fetched in a separate phase AFTER all conversations are secured.
       const fileRefs = extractFileReferences(convo);
-      const fileMap = {};
-      const usedNames = new Set();
-
-      for (const ref of fileRefs) {
-        totalFiles++;
-        try {
-          const { filename: dlName, data } = await downloadFile(ref.fileId, ref.filename);
-          const actualName = deduplicateFilename(dlName || ref.filename, usedNames);
-          zipEntries.push({ path: `files/${fname}/${actualName}`, data });
-          fileMap[ref.fileId] = `../files/${fname}/${actualName}`; // pacing handled by throttle()
-        } catch (e) {
-          failedFiles++;
-          ui.workerLog(workerId, `file ${ref.fileId} failed (${e.message}) in "${title.slice(0, 40)}"`);
-        }
-      }
-
-      const mdStr = toMarkdown(convo, fileMap);
+      totalFiles += fileRefs.length;
       zipEntries.push({ path: `json/${fname}.json`, data: jsonStr });
-      zipEntries.push({ path: `markdown/${fname}.md`, data: mdStr });
-
-      downloaded[i] = { fname, title, convo, fileMap };
-      ui.workerLog(workerId, `done #${i + 1}${fileRefs.length ? ` (${fileRefs.length} files)` : ""}`);
+      downloaded[i] = { fname, title, convo, fileMap: {}, fileRefs };
+      ui.workerLog(workerId, `done #${i + 1}${fileRefs.length ? ` (${fileRefs.length} files queued)` : ""}`);
     } catch (e) {
       failed++;
       ui.worker(workerId, `#${i + 1} FAILED`, "red");
@@ -697,15 +687,49 @@
     })
   );
   requestRestart = null; // pool has drained; too late to restart
-  ui.log(`Download pass done: ${total - failed} ok, ${failed} failed`);
+  ui.log(`Text pass done: ${total - failed} ok, ${failed} failed — all conversations secured`);
 
-  // ── Pass 2: Generate HTML with sidebar ──────────────────────────────
+  // ── Pass 2: Download files (text is already safe) ───────────────────
+  // Cached files cost nothing; only new ones spend quota.
 
-  ui.set("Generating HTML pages...", 100);
   const succeededConvos = downloaded.filter(Boolean);
+  const fileQueue = succeededConvos.flatMap((d) => d.fileRefs.map((ref) => ({ d, ref })));
+  let filesDone = 0;
+  if (fileQueue.length) {
+    ui.log(`Starting file pass: ${fileQueue.length} files across ${succeededConvos.filter((d) => d.fileRefs.length).length} conversations`);
+    const usedNamesByConvo = new Map();
+    let nextFile = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, fileQueue.length) }, async (_, w) => {
+        while (nextFile < fileQueue.length) {
+          const { d, ref } = fileQueue[nextFile++];
+          ui.worker(w, `file ${filesDone + 1}/${fileQueue.length}`, "green");
+          try {
+            const { filename: dlName, data } = await downloadFile(ref.fileId, ref.filename);
+            if (!usedNamesByConvo.has(d.fname)) usedNamesByConvo.set(d.fname, new Set());
+            const actualName = deduplicateFilename(dlName || ref.filename, usedNamesByConvo.get(d.fname));
+            zipEntries.push({ path: `files/${d.fname}/${actualName}`, data });
+            d.fileMap[ref.fileId] = `../files/${d.fname}/${actualName}`;
+          } catch (e) {
+            failedFiles++;
+            ui.workerLog(w, `file ${ref.fileId} failed (${e.message}) in "${d.title.slice(0, 40)}"`);
+          }
+          filesDone++;
+          ui.set(`Downloading files: ${filesDone} of ${fileQueue.length}`, Math.round((filesDone / fileQueue.length) * 100), d.title);
+        }
+        ui.worker(w, "idle", "gray");
+      })
+    );
+    ui.log(`File pass done: ${fileQueue.length - failedFiles}/${fileQueue.length} ok`);
+  }
+
+  // ── Pass 3: Generate Markdown + HTML (needs final file paths) ───────
+
+  ui.set("Generating Markdown and HTML...", 100);
   const allConvos = succeededConvos.map((d) => ({ fname: d.fname, title: d.title }));
 
   for (const d of succeededConvos) {
+    zipEntries.push({ path: `markdown/${d.fname}.md`, data: toMarkdown(d.convo, d.fileMap) });
     const htmlStr = toHtml(d.convo, d.fileMap, allConvos, d.fname);
     zipEntries.push({ path: `html/${d.fname}.html`, data: htmlStr });
   }
