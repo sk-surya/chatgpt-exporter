@@ -264,7 +264,9 @@
       if (pauseWait > 0) { await sleep(Math.min(pauseWait, 5000) + Math.random() * 1000); continue; }
       const now = Date.now();
       const slot = Math.max(now, lsNum(LS_SLOT));
-      localStorage.setItem(LS_SLOT, slot + getDelay());
+      // ±25% jitter: evenly-metronomed requests are bot-obvious and can align
+      // with the window edge; humans are bursty-irregular.
+      localStorage.setItem(LS_SLOT, slot + getDelay() * (0.75 + Math.random() * 0.5));
       if (slot > now) await sleep(slot - now);
       if (Date.now() < getPause()) continue; // a pause started while we waited
       return;
