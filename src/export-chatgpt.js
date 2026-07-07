@@ -385,12 +385,15 @@
           // actually accept requests? Pace 20% slower than that measurement.
           const measured = epochStrike();
           let d;
-          if (measured) {
-            d = Math.min(Math.round(measured * 1.2), 120000);
+          // A sample can only teach us a FASTER rate: when we pace slower than
+          // the server's limit, "accepted 1 req/Xs" just echoes our own delay,
+          // and 1.2x of it ratchets forever. Slower pacing comes from the
+          // gentle climb below, never from the echo.
+          if (measured && measured * 1.2 < getDelay()) {
+            d = Math.round(measured * 1.2);
             ui.log(`Learned: server accepted ~1 req/${Math.round(measured / 1000)}s last stretch — pacing at ${Math.round(d / 1000)}s/req`);
           } else {
-            // No measurement yet (429 right away): climb multiplicatively.
-            d = Math.min(Math.max(getDelay() * 1.5, getDelay() + 2000), 120000);
+            d = Math.min(Math.max(getDelay() * 1.25, getDelay() + 2000), 120000);
           }
           setDelay(d);
           // The rate we were just running at is proven too fast — floor there.
