@@ -203,6 +203,7 @@
   // the server rate-limits per account, not per tab.
   const LS_PAUSE = "cge:pausedUntil", LS_DELAY = "cge:delayMs", LS_SLOT = "cge:nextSlot";
   const LS_429S = "cge:429s", LS_OK = "cge:okSinceLimit";
+  const LS_FLOOR = "cge:floorMs", LS_FLOOR_TS = "cge:floorTs";
   const lsNum = (k) => Number(localStorage.getItem(k)) || 0;
   const getDelay = () => Math.max(DELAY, lsNum(LS_DELAY) || DELAY);
   const setDelay = (v) => localStorage.setItem(LS_DELAY, Math.round(v));
@@ -292,7 +293,11 @@
         // requests and turns the run into a 429 sawtooth.
         const okStreak = lsNum(LS_OK) + 1;
         localStorage.setItem(LS_OK, okStreak);
-        if (okStreak >= 10) setDelay(Math.max(DELAY, getDelay() * 0.98));
+        // Don't decay below a recently-punished delay — a quota that refills
+        // ~3/min will 429 the same rate again; the floor expires after 15 min
+        // so we still re-probe once the penalty window has really passed.
+        const floor = Date.now() - lsNum(LS_FLOOR_TS) < 900000 ? lsNum(LS_FLOOR) : DELAY;
+        if (okStreak >= 10) setDelay(Math.max(DELAY, floor, getDelay() * 0.98));
         return resp;
       }
       if (resp.status === 429 || resp.status >= 500) {
@@ -305,6 +310,9 @@
           // to reach a low tolerated rate; ×1.5 discovers it in 2-3 strikes.
           const d = Math.min(Math.max(getDelay() * 1.5, getDelay() + 2000), 60000);
           setDelay(d);
+          // The rate we were just running at is proven too fast — floor there.
+          localStorage.setItem(LS_FLOOR, Math.round(d));
+          localStorage.setItem(LS_FLOOR_TS, Date.now());
           const retryAfterRaw = resp.headers.get("Retry-After");
           const retryAfter = parseInt(retryAfterRaw) * 1000;
           // Repeated strikes inside the window mean the quota is drained —
