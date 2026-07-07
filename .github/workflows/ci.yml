@@ -4,7 +4,7 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    - cron: "0 6 * * 1" # weekly — deps can turn vulnerable without a code change
+    - cron: "0 6 * * 1" # weekly, deps can turn vulnerable without a code change
 
 jobs:
   test:
@@ -28,8 +28,8 @@ jobs:
       - run: npm ci
       - name: Dependency audit
         run: npm audit --audit-level=moderate
-      - name: Static analysis (CodeQL-lite via osv-scanner)
-        uses: google/osv-scanner-action/osv-scanner-action@v2
+      - name: Vulnerability scan (osv-scanner)
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: --lockfile=package-lock.json
 

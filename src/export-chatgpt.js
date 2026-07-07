@@ -7,7 +7,7 @@
   const VERSION = "v1.0.0";
   const API = "/backend-api";
   const PAGE_SIZE = 100;
-  const DELAY = 1200; // base ms between requests, account-wide — human-ish pace; the site shares this quota
+  const DELAY = 1200; // base ms between requests, account-wide, human-ish pace; the site shares this quota
   const CONCURRENCY = 4; // parallel conversation downloads; 429s are retried with backoff
   const DEVICE_ID = crypto.randomUUID();
 
@@ -47,7 +47,7 @@
       <div id="cge-chips" style="display:flex;gap:8px;align-items:center;padding:8px 16px;overflow-x:auto"></div>
     </div>
     <div id="cge-eta" style="position:fixed;top:12px;right:12px;z-index:100000;background:#0f172a;border:1px solid #334155;border-radius:8px;
-      padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;text-align:right;box-shadow:0 4px 16px rgba(0,0,0,0.4)">ETA —</div>
+      padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;text-align:right;box-shadow:0 4px 16px rgba(0,0,0,0.4)">ETA -</div>
     <div style="position:fixed;top:12px;left:12px;z-index:100000;display:flex;gap:8px">
       <button id="cge-partial" style="background:#1e293b;border:1px solid #334155;border-radius:8px;
         padding:8px 14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4)">⬇ save partial (0)</button>
@@ -78,7 +78,7 @@
       if (pct != null) this.bar.style.width = pct + "%";
       if (detail) this.detail.textContent = detail;
     },
-    // Taskbar chip: colored dot + label. Click toggles that chip's log view —
+    // Taskbar chip: colored dot + label. Click toggles that chip's log view -
     // except the throttle chip, which is a pure status display pinned right.
     chip(key, name) {
       if (this.chips[key]) return this.chips[key];
@@ -136,7 +136,7 @@
       const c = this.chip(key, name);
       const time = new Date().toTimeString().slice(0, 8);
       c.buffer += `[${time}] ${msg}\n`;
-      // Cap the buffer — re-rendering an ever-growing <pre> janks the page on long runs
+      // Cap the buffer, re-rendering an ever-growing <pre> janks the page on long runs
       if (c.buffer.length > 200000) c.buffer = c.buffer.slice(-100000);
       if (this.activeLogKey === key) {
         this.logEl.textContent = c.buffer;
@@ -212,7 +212,7 @@
 
   // Shared adaptive throttle (AIMD): every 429 raises the global delay between
   // requests, every success decays it back down. State lives in localStorage so
-  // ALL tabs running the exporter share ONE pause window and ONE request pacer —
+  // ALL tabs running the exporter share ONE pause window and ONE request pacer -
   // the server rate-limits per account, not per tab.
   const LS_PAUSE = "cge:pausedUntil", LS_DELAY = "cge:delayMs", LS_SLOT = "cge:nextSlot";
   const LS_429S = "cge:429s", LS_OK = "cge:okSinceLimit";
@@ -228,7 +228,7 @@
 
   // The server limit is a sliding-window quota (a burst spends the budget and
   // is paid off for minutes), so 429 events within the window count as strikes
-  // and stretch the pause — the quota needs refill time, not just a delay.
+  // and stretch the pause, the quota needs refill time, not just a delay.
   function recordStrike() {
     const now = Date.now();
     const arr = JSON.parse(localStorage.getItem(LS_429S) || "[]").filter((t) => now - t < 300000);
@@ -265,7 +265,7 @@
   setInterval(() => {
     const pauseLeft = getPause() - Date.now();
     if (pauseLeft > 0) {
-      ui.setChip("throttle", "throttle", `PAUSED ${Math.ceil(pauseLeft / 1000)}s — ${Math.round(getDelay())}ms/req`, "red");
+      ui.setChip("throttle", "throttle", `PAUSED ${Math.ceil(pauseLeft / 1000)}s, ${Math.round(getDelay())}ms/req`, "red");
     } else {
       const d = getDelay();
       ui.setChip("throttle", "throttle", `${Math.round(d)}ms/req`, d > DELAY * 4 ? "yellow" : "green");
@@ -273,7 +273,7 @@
   }, 250);
 
   // ETA clock (top right): based on observed throughput so far, which already
-  // includes every pause and throttle we actually hit — no rate model needed.
+  // includes every pause and throttle we actually hit, no rate model needed.
   const etaEl = overlay.querySelector("#cge-eta");
   setInterval(() => {
     if (!stats.total || !stats.done || !stats.startedAt) return;
@@ -284,7 +284,7 @@
       return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
     };
     const doneAt = new Date(Date.now() + remaining);
-    etaEl.textContent = `${stats.done}/${stats.total} — ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
+    etaEl.textContent = `${stats.done}/${stats.total}, ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
   }, 1000);
 
   // Partial save (top left): zips whatever is downloaded so far, any time.
@@ -328,7 +328,7 @@
       const nextIn = Math.max(0, Math.max(lsNum(LS_SLOT), getPause()) - Date.now());
       infoEl.textContent =
         `learned samples (s/req): ${samples.map((s) => Math.round(s / 1000)).join(", ") || "none yet"}\n` +
-        `current stretch: ${e ? `${e.ok} ok over ${Math.round((Date.now() - e.start) / 1000)}s` : "—"}\n` +
+        `current stretch: ${e ? `${e.ok} ok over ${Math.round((Date.now() - e.start) / 1000)}s` : "-"}\n` +
         `floor: ${lsNum(LS_FLOOR) ? Math.round(lsNum(LS_FLOOR) / 1000) + "s" : "none"}\n` +
         `next request in: ${Math.round(nextIn / 1000)}s`;
     }, 1000);
@@ -356,19 +356,19 @@
     }
   }
   async function fetchWithRetry(url, options = {}) {
-    // Retries 429/5xx forever — the export never gives up on rate limits, it
+    // Retries 429/5xx forever, the export never gives up on rate limits, it
     // just keeps stretching the pause (10s steps, capped at 5 min).
     for (let i = 0; ; i++) {
       await throttle();
       const resp = await fetch(url, options);
       if (resp.ok) {
         // Hover at the discovered equilibrium: tiny decay (2%), and only after
-        // a clean streak — an aggressive decay re-pokes the limit every few
+        // a clean streak, an aggressive decay re-pokes the limit every few
         // requests and turns the run into a 429 sawtooth.
         const okStreak = lsNum(LS_OK) + 1;
         localStorage.setItem(LS_OK, okStreak);
         epochOk();
-        // Don't decay below a recently-punished delay — a quota that refills
+        // Don't decay below a recently-punished delay, a quota that refills
         // ~3/min will 429 the same rate again; the floor expires after 15 min
         // so we still re-probe once the penalty window has really passed.
         const floor = Date.now() - lsNum(LS_FLOOR_TS) < 900000 ? lsNum(LS_FLOOR) : DELAY;
@@ -391,12 +391,12 @@
           // gentle climb below, never from the echo.
           if (measured && measured * 1.2 < getDelay()) {
             d = Math.round(measured * 1.2);
-            ui.log(`Learned: server accepted ~1 req/${Math.round(measured / 1000)}s last stretch — pacing at ${Math.round(d / 1000)}s/req`);
+            ui.log(`Learned: server accepted ~1 req/${Math.round(measured / 1000)}s last stretch, pacing at ${Math.round(d / 1000)}s/req`);
           } else {
             d = Math.min(Math.max(getDelay() * 1.25, getDelay() + 2000), 120000);
           }
           setDelay(d);
-          // The rate we were just running at is proven too fast — floor there.
+          // The rate we were just running at is proven too fast, floor there.
           localStorage.setItem(LS_FLOOR, Math.round(d));
           localStorage.setItem(LS_FLOOR_TS, Date.now());
           const retryAfterRaw = resp.headers.get("Retry-After");
@@ -406,10 +406,10 @@
           // stretch it further.
           const backoff = Math.min(Math.max(retryAfter || 0, getMinPause() * strikes), 300000);
           const body = await resp.text().catch(() => "");
-          ui.log(`HTTP ${resp.status} details — Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
+          ui.log(`HTTP ${resp.status} details, Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
           localStorage.setItem(LS_PAUSE, Date.now() + backoff);
           ui.set(null, null, `Rate limited (HTTP ${resp.status}), pausing ${Math.round(backoff / 1000)}s...`);
-          ui.log(`HTTP ${resp.status} — strike ${strikes} in 5min window, pause ${Math.round(backoff / 1000)}s (all tabs), delay now ${Math.round(d)}ms`);
+          ui.log(`HTTP ${resp.status}, strike ${strikes} in 5min window, pause ${Math.round(backoff / 1000)}s (all tabs), delay now ${Math.round(d)}ms`);
         }
         continue;
       }
@@ -435,7 +435,7 @@
       req.result.createObjectStore("files");
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => { ui.log("IndexedDB unavailable — running without cache"); resolve(null); };
+    req.onerror = () => { ui.log("IndexedDB unavailable, running without cache"); resolve(null); };
   });
   const cacheGet = (store, key) => new Promise((resolve) => {
     if (!idb) return resolve(undefined);
@@ -461,10 +461,10 @@
       tx.oncomplete = tx.onerror = () => resolve();
     })));
     cacheHits = 0; fileCacheHits = 0;
-    ui.log("Cache cleared — restarting download from #1 in 3s...");
+    ui.log("Cache cleared, restarting download from #1 in 3s...");
     await sleep(3000);
     if (requestRestart) requestRestart();
-    else ui.log("Download not started yet — nothing to restart, fresh fetch will happen naturally");
+    else ui.log("Download not started yet, nothing to restart, fresh fetch will happen naturally");
   });
 
   // Cached conversation fetch: reuse when the conversation hasn't been
@@ -481,7 +481,7 @@
   }
 
   async function apiFetchBinary(url) {
-    // Signed CDN URL (files.oaiusercontent.com etc.), not backend-api — it does
+    // Signed CDN URL (files.oaiusercontent.com etc.), not backend-api, it does
     // not spend the account quota, so skip the pacer; simple retry only.
     let resp;
     for (let i = 0; ; i++) {
@@ -555,7 +555,7 @@
   }
 
   async function downloadFile(fileId, fallbackName) {
-    // Files are immutable per fileId — cache hit needs no freshness check.
+    // Files are immutable per fileId, cache hit needs no freshness check.
     const cached = await cacheGet("files", fileId);
     if (cached) { fileCacheHits++; return cached; }
     const meta = await apiGet(`files/download/${fileId}`);
@@ -643,7 +643,7 @@
   const downloaded = new Array(total); // { fname, title, convo, fileMap }, in list order
   stats.total = total;
   stats.startedAt = Date.now();
-  stats.entries = zipEntries; // live reference — partial save zips whatever is here
+  stats.entries = zipEntries; // live reference, partial save zips whatever is here
 
   async function processConversation(i, workerId) {
     const { id: cid, title: rawTitle, update_time: updateTime } = conversations[i];
@@ -675,7 +675,7 @@
   }
 
   // Worker pool: CONCURRENCY conversations in flight at once. A cache-clear
-  // resets `next` to 0 — in-flight items finish, then workers sweep from #1
+  // resets `next` to 0, in-flight items finish, then workers sweep from #1
   // (already-done indices refill zipEntries/downloaded from the fresh fetch).
   let next = 0;
   requestRestart = () => {
@@ -696,7 +696,7 @@
     })
   );
   requestRestart = null; // pool has drained; too late to restart
-  ui.log(`Text pass done: ${total - failed} ok, ${failed} failed — all conversations secured`);
+  ui.log(`Text pass done: ${total - failed} ok, ${failed} failed, all conversations secured`);
 
   // ── Pass 2: Download files (text is already safe) ───────────────────
   // Cached files cost nothing; only new ones spend quota.

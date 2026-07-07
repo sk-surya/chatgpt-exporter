@@ -9,7 +9,7 @@
     "build:debug": "node scripts/make-bookmarklet.mjs --no-minify",
     "test": "node test/exporter.test.mjs src/export-chatgpt.js",
     "audit": "npm audit --audit-level=moderate",
-    "version": "node scripts/sync-version.mjs && git add src/export-chatgpt.js"
+    "version": "node scripts/sync-version.mjs && git add src/export-chatgpt.js README.md"
   },
   "devDependencies": {
     "terser": "^5.36.0"

@@ -12,3 +12,8 @@ if (out === src && !src.includes(`"v${version}"`)) {
 }
 writeFileSync(path, out);
 console.log(`src/export-chatgpt.js VERSION -> v${version}`);
+
+// keep the README headline in sync too
+const readme = readFileSync("README.md", "utf8");
+writeFileSync("README.md", readme.replace(/^# ChatGPT Exporter v[\d.]+/m, `# ChatGPT Exporter v${version}`));
+console.log(`README.md headline -> v${version}`);

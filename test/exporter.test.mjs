@@ -187,5 +187,5 @@ assert.ok(served429, "429 path exercised");
 const convoFetches = requestLog.filter((u) => u.includes("/backend-api/conversation/")).length;
 assert.equal(convoFetches, N_CONVOS + 1, "each convo fetched once + 1 retry");
 
-console.log(`ALL PASS — ${entryCount} entries, max in-flight ${maxInFlight}, 429 retried, zip valid`);
+console.log(`ALL PASS, ${entryCount} entries, max in-flight ${maxInFlight}, 429 retried, zip valid`);
 process.exit(0);
