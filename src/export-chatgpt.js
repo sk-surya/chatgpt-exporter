@@ -188,10 +188,22 @@
   // ALL tabs running the exporter share ONE pause window and ONE request pacer —
   // the server rate-limits per account, not per tab.
   const LS_PAUSE = "cge:pausedUntil", LS_DELAY = "cge:delayMs", LS_SLOT = "cge:nextSlot";
+  const LS_429S = "cge:429s", LS_OK = "cge:okSinceLimit";
   const lsNum = (k) => Number(localStorage.getItem(k)) || 0;
   const getDelay = () => Math.max(DELAY, lsNum(LS_DELAY) || DELAY);
   const setDelay = (v) => localStorage.setItem(LS_DELAY, Math.round(v));
   const getPause = () => lsNum(LS_PAUSE);
+
+  // The server limit is a sliding-window quota (a burst spends the budget and
+  // is paid off for minutes), so 429 events within the window count as strikes
+  // and stretch the pause — the quota needs refill time, not just a delay.
+  function recordStrike() {
+    const now = Date.now();
+    const arr = JSON.parse(localStorage.getItem(LS_429S) || "[]").filter((t) => now - t < 300000);
+    arr.push(now);
+    localStorage.setItem(LS_429S, JSON.stringify(arr));
+    return arr.length; // strikes in the last 5 min
+  }
 
   // Live throttle ticker: pinned to the far right of the taskbar, pure status
   // (no click console). Counts down pause seconds; reflects other tabs' state too.
@@ -258,26 +270,32 @@
       await throttle();
       const resp = await fetch(url, options);
       if (resp.ok) {
-        // Recover fast: each success cuts the delay 20%, so after a pause we
-        // ramp back to full speed instead of crawling at the punished rate.
-        setDelay(Math.max(DELAY, getDelay() * 0.8));
+        // Hover at the discovered equilibrium: tiny decay (2%), and only after
+        // a clean streak — an aggressive decay re-pokes the limit every few
+        // requests and turns the run into a 429 sawtooth.
+        const okStreak = lsNum(LS_OK) + 1;
+        localStorage.setItem(LS_OK, okStreak);
+        if (okStreak >= 10) setDelay(Math.max(DELAY, getDelay() * 0.98));
         return resp;
       }
       if (resp.status === 429 || resp.status >= 500) {
         // Every in-flight request (across all tabs) sees the same rate-limit
         // event; only the first escalates, the rest just honor the pause.
         if (Date.now() >= getPause()) {
+          localStorage.setItem(LS_OK, 0);
+          const strikes = recordStrike();
           const d = Math.min(getDelay() + 2000, 30000); // +2s per event
           setDelay(d);
           const retryAfterRaw = resp.headers.get("Retry-After");
           const retryAfter = parseInt(retryAfterRaw) * 1000;
-          const backoff = Math.min(retryAfter || 30000 + i * 2000, 300000);
-          // Surface what the server actually told us about the limit window
+          // Repeated strikes inside the window mean the quota is drained —
+          // wait longer for refill instead of nibbling at it every 30s.
+          const backoff = Math.min(retryAfter || 30000 * strikes, 300000);
           const body = await resp.text().catch(() => "");
           ui.log(`HTTP ${resp.status} details — Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
           localStorage.setItem(LS_PAUSE, Date.now() + backoff);
           ui.set(null, null, `Rate limited (HTTP ${resp.status}), pausing ${Math.round(backoff / 1000)}s...`);
-          ui.log(`HTTP ${resp.status} — pause ${Math.round(backoff / 1000)}s (all tabs), request delay now ${Math.round(d)}ms (retry ${i + 1})`);
+          ui.log(`HTTP ${resp.status} — strike ${strikes} in 5min window, pause ${Math.round(backoff / 1000)}s (all tabs), delay now ${Math.round(d)}ms`);
         }
         continue;
       }
