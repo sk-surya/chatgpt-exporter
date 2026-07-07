@@ -244,8 +244,12 @@
   // MEASURES the window instead of blindly climbing until the 429s stop.
   // epoch = { start, ok } for the current stretch.
   function epochOk() {
-    const e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null") || { start: Date.now(), ok: 0 };
+    let e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null");
+    // A stale epoch (previous session, >10 min gap) would produce a garbage
+    // sample like "17 ok over 27 minutes"; start fresh instead.
+    if (!e || Date.now() - (e.last || e.start) > 600000) e = { start: Date.now(), ok: 0 };
     e.ok++;
+    e.last = Date.now();
     localStorage.setItem(LS_EPOCH, JSON.stringify(e));
   }
   function epochStrike() {
@@ -372,7 +376,10 @@
         // ~3/min will 429 the same rate again; the floor expires after 15 min
         // so we still re-probe once the penalty window has really passed.
         const floor = Date.now() - lsNum(LS_FLOOR_TS) < 900000 ? lsNum(LS_FLOOR) : DELAY;
-        if (okStreak >= 10) setDelay(Math.max(DELAY, floor, getDelay() * 0.98));
+        // MIMD recovery: every 10 clean requests cut the delay 30% (down to the
+        // floor). The old 2%-per-success decay needed ~177 successes at 40s+
+        // each to recover from a penalty, hours of crawling after it lifted.
+        if (okStreak % 10 === 0) setDelay(Math.max(DELAY, floor, getDelay() * 0.7));
         return resp;
       }
       if (resp.status === 429 || resp.status >= 500) {
@@ -389,6 +396,10 @@
           // the server's limit, "accepted 1 req/Xs" just echoes our own delay,
           // and 1.2x of it ratchets forever. Slower pacing comes from the
           // gentle climb below, never from the echo.
+          // Floor at the rate that was PROVEN too fast (the one we just ran
+          // at), not at the raised delay, otherwise recovery can never probe
+          // below the punishment and the exporter stays stuck-slow forever.
+          const provenTooFast = getDelay();
           if (measured && measured * 1.2 < getDelay()) {
             d = Math.round(measured * 1.2);
             ui.log(`Learned: server accepted ~1 req/${Math.round(measured / 1000)}s last stretch, pacing at ${Math.round(d / 1000)}s/req`);
@@ -396,8 +407,7 @@
             d = Math.min(Math.max(getDelay() * 1.25, getDelay() + 2000), 120000);
           }
           setDelay(d);
-          // The rate we were just running at is proven too fast, floor there.
-          localStorage.setItem(LS_FLOOR, Math.round(d));
+          localStorage.setItem(LS_FLOOR, Math.round(provenTooFast));
           localStorage.setItem(LS_FLOOR_TS, Date.now());
           const retryAfterRaw = resp.headers.get("Retry-After");
           const retryAfter = parseInt(retryAfterRaw) * 1000;
