@@ -77,9 +77,16 @@
       label.textContent = name;
       el.append(dot, label);
       if (key === "throttle") {
+        // status pill, not a session chip: always rightmost, visually distinct
+        el.style.order = "99";
         el.style.marginLeft = "auto";
         el.style.cursor = "default";
+        el.style.background = "transparent";
+        el.style.border = "1px solid #475569";
+        el.style.color = "#e2e8f0";
+        el.style.fontWeight = "600";
       } else {
+        el.style.order = key === "global" ? "0" : "1"; // LOG first, workers after
         el.addEventListener("click", () => this.showLog(key));
       }
       this.chipsEl.appendChild(el);
@@ -100,7 +107,7 @@
         this.activeLogKey = null;
         return;
       }
-      for (const c of Object.values(this.chips)) c.el.style.background = "#1e293b";
+      for (const [k, c] of Object.entries(this.chips)) if (k !== "throttle") c.el.style.background = "#1e293b";
       this.activeLogKey = key;
       this.chips[key].el.style.background = "#334155";
       this.logEl.style.display = "block";
