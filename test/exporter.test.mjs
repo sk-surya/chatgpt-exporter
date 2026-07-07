@@ -21,6 +21,7 @@ function fakeEl() {
     getBoundingClientRect: () => ({ bottom: 0 }),
     get parentElement() { return fakeEl(); },
     offsetHeight: 150,
+    getContext: () => new Proxy({}, { get: (t, p) => (p === "canvas" ? fakeEl() : () => {}) }),
     click() { this.clicked = true; downloadedZipHref = this.href; },
     set download(v) { zipName = v; },
   };
@@ -40,6 +41,8 @@ globalThis.document = {
   activeElement: null,
 };
 globalThis.window = { innerHeight: 900 };
+globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 100);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 // in-memory IndexedDB stub: same API shape, backed by Maps
 const idbStores = { convos: new Map(), files: new Map(), meta: new Map() };
 function idbReq(result) { const r = { result }; setImmediate(() => r.onsuccess?.()); return r; }

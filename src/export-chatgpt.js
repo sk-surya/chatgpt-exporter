@@ -32,13 +32,16 @@
   overlay.innerHTML = `
     <div style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;
       display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
-      <div style="background:#1e293b;border-radius:16px;padding:40px;max-width:500px;width:90%;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4)">
-        <h2 style="margin:0 0 8px;font-size:20px;color:#f8fafc">ChatGPT Exporter <span id="cge-version" style="font-size:12px;color:#64748b;font-weight:normal"></span></h2>
-        <p id="cge-status" style="color:#94a3b8;font-size:14px;margin:0 0 20px">Starting...</p>
-        <div style="width:100%;height:8px;background:#334155;border-radius:4px;overflow:hidden;margin-bottom:8px">
-          <div id="cge-bar" style="height:100%;background:#3b82f6;border-radius:4px;transition:width 0.3s;width:0%"></div>
+      <div style="display:flex;align-items:center;gap:20px;max-width:640px;width:90%">
+        <div style="background:#1e293b;border-radius:16px;padding:40px;flex:1;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4)">
+          <h2 style="margin:0 0 8px;font-size:20px;color:#f8fafc">ChatGPT Exporter <span id="cge-version" style="font-size:12px;color:#64748b;font-weight:normal"></span></h2>
+          <p id="cge-status" style="color:#94a3b8;font-size:14px;margin:0 0 20px">Starting...</p>
+          <div style="width:100%;height:8px;background:#334155;border-radius:4px;overflow:hidden;margin-bottom:8px">
+            <div id="cge-bar" style="height:100%;background:#3b82f6;border-radius:4px;transition:width 0.3s;width:0%"></div>
+          </div>
+          <p id="cge-detail" style="color:#64748b;font-size:13px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></p>
         </div>
-        <p id="cge-detail" style="color:#64748b;font-size:13px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></p>
+        <canvas id="cge-hourglass" width="90" height="140" style="display:none;filter:drop-shadow(0 8px 16px rgba(0,0,0,0.5))"></canvas>
       </div>
     </div>
     <div id="cge-taskbar" style="position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#0f172a;border-top:1px solid #334155;
@@ -178,6 +181,103 @@
   overlay.querySelector("#cge-version").textContent = VERSION;
   ui.log(`Exporter ${VERSION} started`);
 
+  // ── Hourglass: a REAL visible timeout ───────────────────────────────
+  // Grain count scales with the pause length; the sand runs through exactly
+  // once over the real duration, then the glass flips and fades out.
+  const hourglass = (() => {
+    const cv = overlay.querySelector("#cge-hourglass");
+    const ctx = cv.getContext("2d");
+    const W = 90, H = 140, NECK = H / 2;
+    let anim = null;
+
+    // glass outline: two trapezoid bulbs meeting at a thin neck
+    function glass(rot) {
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.rotate(rot);
+      ctx.translate(-W / 2, -H / 2);
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(14, 8); ctx.lineTo(W - 14, 8);
+      ctx.moveTo(14, H - 8); ctx.lineTo(W - 14, H - 8);
+      ctx.moveTo(16, 10); ctx.lineTo(16, 22); ctx.lineTo(W / 2 - 4, NECK - 4); ctx.lineTo(W / 2 - 4, NECK + 4); ctx.lineTo(16, H - 22); ctx.lineTo(16, H - 10);
+      ctx.moveTo(W - 16, 10); ctx.lineTo(W - 16, 22); ctx.lineTo(W / 2 + 4, NECK - 4); ctx.lineTo(W / 2 + 4, NECK + 4); ctx.lineTo(W - 16, H - 22); ctx.lineTo(W - 16, H - 10);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // sand at fraction f (0 = all top, 1 = all bottom)
+    function sand(f, grains) {
+      ctx.fillStyle = "#eab308";
+      const topGrains = Math.round(grains * (1 - f));
+      const botGrains = grains - topGrains;
+      // top heap: fills the upper bulb from the neck upward
+      for (let g = 0; g < topGrains; g++) {
+        const row = Math.floor(g / 9), col = g % 9;
+        const y = NECK - 8 - row * 4;
+        if (y < 24) continue;
+        const halfW = ((y - 22) / (NECK - 22)) * (W / 2 - 20) + 3;
+        const x = W / 2 - halfW + ((col + (row % 2) * 0.5) / 8.5) * halfW * 2;
+        ctx.fillRect(x, y, 2.5, 2.5);
+      }
+      // bottom heap: piles up from the floor
+      for (let g = 0; g < botGrains; g++) {
+        const row = Math.floor(g / 9), col = g % 9;
+        const y = H - 14 - row * 4;
+        if (y < NECK + 8) continue;
+        const halfW = ((y - NECK) / (H / 2 - 22)) * (W / 2 - 20) + 3;
+        const x = W / 2 - halfW + ((col + (row % 2) * 0.5) / 8.5) * halfW * 2;
+        ctx.fillRect(x, y, 2.5, 2.5);
+      }
+      // falling stream
+      if (f > 0 && f < 1) {
+        for (let y = NECK; y < H - 16 - botGrains / 9 * 4; y += 5) {
+          ctx.fillRect(W / 2 - 1 + Math.sin(y * 1.7) * 0.8, y, 2, 3);
+        }
+      }
+    }
+
+    return {
+      start(durationMs) {
+        if (anim) cancelAnimationFrame(anim);
+        cv.style.display = "block";
+        cv.style.opacity = "1";
+        cv.style.transition = "";
+        const grains = Math.max(30, Math.min(400, Math.round(durationMs / 500))); // ~2 grains/s, capped
+        const t0 = Date.now();
+        const tick = () => {
+          const f = Math.min(1, (Date.now() - t0) / durationMs);
+          ctx.clearRect(0, 0, W, H);
+          if (f < 1) {
+            glass(0); sand(f, grains);
+            anim = requestAnimationFrame(tick);
+          } else {
+            // flip: quick rotation, then fade out
+            const flipT0 = Date.now();
+            const flip = () => {
+              const ft = Math.min(1, (Date.now() - flipT0) / 600);
+              ctx.clearRect(0, 0, W, H);
+              glass(ft * Math.PI); if (ft >= 1) { sand(0, grains); glass(Math.PI); }
+              if (ft < 1) anim = requestAnimationFrame(flip);
+              else {
+                cv.style.transition = "opacity 1.2s";
+                cv.style.opacity = "0";
+                setTimeout(() => { cv.style.display = "none"; }, 1300);
+              }
+            };
+            flip();
+          }
+        };
+        tick();
+      },
+      stop() {
+        if (anim) cancelAnimationFrame(anim);
+        cv.style.display = "none";
+      },
+    };
+  })();
+
   // ── Console resize handle ───────────────────────────────────────────
   // Drag the top edge of the log panel; capped at the popup's lower edge.
   {
@@ -271,11 +371,13 @@
     localStorage.setItem(LS_EPOCH, JSON.stringify({ start: Date.now(), ok: 0 }));
     if (!e || e.ok < 2) return null; // too little data to be a sample
     const perReqMs = (Date.now() - e.start) / e.ok;
-    const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]").slice(-4);
-    samples.push(Math.round(perReqMs));
+    // rich samples for the stats table; only the last 5 drive the median
+    // (drop legacy plain-number samples from older builds)
+    const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]").filter((s) => typeof s === "object").slice(-19);
+    samples.push({ at: Date.now(), ok: e.ok, secs: Math.round((Date.now() - e.start) / 1000), perReq: Math.round(perReqMs) });
     localStorage.setItem(LS_SAMPLES, JSON.stringify(samples));
-    const sorted = [...samples].sort((a, b) => a - b);
-    return sorted[Math.floor(sorted.length / 2)]; // median accepted pace
+    const recent = samples.slice(-5).map((s) => s.perReq).sort((a, b) => a - b);
+    return recent[Math.floor(recent.length / 2)]; // median accepted pace
   }
 
   // Live throttle ticker: pinned to the far right of the taskbar, pure status
@@ -364,17 +466,27 @@
         ui.log("Tuner: paused all requests until resumed");
       }
     });
+    // compact readout; click "stats" to toggle a full per-stretch table
+    let statsOpen = false;
+    infoEl.style.cursor = "pointer";
+    infoEl.title = "click for per-stretch stats";
+    infoEl.addEventListener("click", () => (statsOpen = !statsOpen));
     setInterval(() => {
       if (document.activeElement !== dEl) dEl.value = getDelay();
       if (document.activeElement !== pEl) pEl.value = Math.round(getMinPause() / 1000);
-      const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]");
+      const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]").filter((s) => typeof s === "object");
       const e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null");
       const nextIn = Math.max(0, Math.max(lsNum(LS_SLOT), getPause()) - Date.now());
-      infoEl.textContent =
-        `learned samples (s/req): ${samples.map((s) => Math.round(s / 1000)).join(", ") || "none yet"}\n` +
-        `current stretch: ${e ? `${e.ok} ok over ${Math.round((Date.now() - e.start) / 1000)}s` : "-"}\n` +
-        `floor: ${lsNum(LS_FLOOR) ? Math.round(lsNum(LS_FLOOR) / 1000) + "s" : "none"}\n` +
-        `next request in: ${Math.round(nextIn / 1000)}s`;
+      const last = samples[samples.length - 1];
+      let text =
+        `learned: ${samples.length ? `${Math.round(last.perReq / 1000)}s/req (${samples.length} stretches) ▸` : "none yet"}\n` +
+        `stretch: ${e ? `${e.ok} ok / ${Math.round((Date.now() - e.start) / 1000)}s` : "-"}  floor: ${lsNum(LS_FLOOR) ? Math.round(lsNum(LS_FLOOR) / 1000) + "s" : "-"}  next: ${Math.round(nextIn / 1000)}s`;
+      if (statsOpen && samples.length) {
+        text += `\n\ntime   ok  span   s/req\n` + samples.slice(-12).map((s) =>
+          `${new Date(s.at).toTimeString().slice(0, 5)}  ${String(s.ok).padStart(3)} ${String(s.secs + "s").padStart(6)} ${String(Math.round(s.perReq / 1000) + "s").padStart(6)}`
+        ).join("\n");
+      }
+      infoEl.textContent = text;
     }, 1000);
   }
 
@@ -458,6 +570,7 @@
           const body = await resp.text().catch(() => "");
           ui.log(`HTTP ${resp.status} details, Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
           localStorage.setItem(LS_PAUSE, Date.now() + backoff);
+          hourglass.start(backoff);
           ui.set(null, null, `Rate limited (HTTP ${resp.status}), pausing ${Math.round(backoff / 1000)}s...`);
           ui.log(`HTTP ${resp.status}, strike ${strikes} in 5min window, pause ${Math.round(backoff / 1000)}s (all tabs), delay now ${Math.round(d)}ms`);
         }
