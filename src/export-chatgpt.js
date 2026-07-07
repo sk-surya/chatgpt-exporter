@@ -21,7 +21,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // Shared progress state for the ETA clock and partial-save button
-  const stats = { done: 0, total: 0, startedAt: 0, entries: null };
+  const stats = { done: 0, total: 0, startedAt: 0, entries: null, recent: [] };
   let requestRestart = null; // set once the download pass starts
 
   // ── UI overlay ──────────────────────────────────────────────────────
@@ -295,8 +295,13 @@
   const etaEl = overlay.querySelector("#cge-eta");
   setInterval(() => {
     if (!stats.total || !stats.done || !stats.startedAt) return;
-    const elapsed = Date.now() - stats.startedAt;
-    const remaining = (elapsed / stats.done) * (stats.total - stats.done);
+    // Rate from the last 20 completions only: a whole-run average is skewed
+    // by the instant cache-hit burst at the start and understates the ETA
+    // badly once the run reaches uncached conversations.
+    const r = stats.recent;
+    const remaining = r.length >= 5
+      ? ((r[r.length - 1] - r[0]) / (r.length - 1)) * (stats.total - stats.done)
+      : ((Date.now() - stats.startedAt) / stats.done) * (stats.total - stats.done);
     const fmt = (ms) => {
       const m = Math.round(ms / 60000);
       return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
@@ -729,6 +734,8 @@
 
     done++;
     stats.done = done;
+    stats.recent.push(Date.now());
+    if (stats.recent.length > 20) stats.recent.shift();
     const pct = Math.round((done / total) * 100);
     ui.set(`Downloading ${done} of ${total} (${pct}%)`, pct, title);
   }
