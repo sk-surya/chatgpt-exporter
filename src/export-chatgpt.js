@@ -61,6 +61,10 @@
         <input id="cge-t-delay" type="number" step="500" min="250" style="width:90px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:4px;padding:3px 6px"></label>
       <label style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">min pause s
         <input id="cge-t-pause" type="number" step="5" min="5" style="width:90px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:4px;padding:3px 6px"></label>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button id="cge-t-fire" style="flex:1;background:#1e3a2f;border:1px solid #14532d;border-radius:4px;color:#86efac;padding:4px 8px;cursor:pointer;font:inherit">fire now</button>
+        <button id="cge-t-hold" style="flex:1;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;padding:4px 8px;cursor:pointer;font:inherit">hold</button>
+      </div>
       <div id="cge-t-info" style="color:#64748b;margin-top:8px;line-height:1.6"></div>
     </div>`;
   document.body.appendChild(overlay);
@@ -323,6 +327,27 @@
     pEl.addEventListener("change", () => {
       localStorage.setItem(LS_MINPAUSE, Math.max(5000, (Number(pEl.value) || 65) * 1000));
       ui.log(`Tuner: min pause set to ${getMinPause() / 1000}s`);
+    });
+    // fire now: clear the pause and the slot queue so the next waiting worker
+    // fires immediately (in every tab)
+    overlay.querySelector("#cge-t-fire").addEventListener("click", () => {
+      localStorage.setItem(LS_PAUSE, 0);
+      localStorage.setItem(LS_SLOT, 0);
+      ui.log("Tuner: manual fire, pause and slot queue cleared");
+    });
+    // hold: indefinite pause toggle (all tabs); release restores normal pacing
+    const holdBtn = overlay.querySelector("#cge-t-hold");
+    holdBtn.addEventListener("click", () => {
+      const holding = getPause() > Date.now() + 86400000;
+      if (holding) {
+        localStorage.setItem(LS_PAUSE, 0);
+        holdBtn.textContent = "hold";
+        ui.log("Tuner: hold released");
+      } else {
+        localStorage.setItem(LS_PAUSE, Date.now() + 365 * 86400000);
+        holdBtn.textContent = "release";
+        ui.log("Tuner: holding all requests until released");
+      }
     });
     setInterval(() => {
       if (document.activeElement !== dEl) dEl.value = getDelay();
