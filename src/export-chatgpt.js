@@ -32,8 +32,8 @@
   overlay.innerHTML = `
     <div style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;
       display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
-      <div style="display:flex;align-items:center;gap:20px;max-width:640px;width:90%">
-        <div style="background:#1e293b;border-radius:16px;padding:40px;flex:1;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4)">
+      <div style="background:#1e293b;border-radius:16px;padding:40px;max-width:560px;width:90%;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4);display:flex;gap:28px;align-items:center">
+        <div style="flex:1;min-width:0">
           <h2 style="margin:0 0 8px;font-size:20px;color:#f8fafc">ChatGPT Exporter <span id="cge-version" style="font-size:12px;color:#64748b;font-weight:normal"></span></h2>
           <p id="cge-status" style="color:#94a3b8;font-size:14px;margin:0 0 20px">Starting...</p>
           <div style="width:100%;height:8px;background:#334155;border-radius:4px;overflow:hidden;margin-bottom:8px">
@@ -41,7 +41,7 @@
           </div>
           <p id="cge-detail" style="color:#64748b;font-size:13px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></p>
         </div>
-        <canvas id="cge-hourglass" width="90" height="140" style="display:none;filter:drop-shadow(0 8px 16px rgba(0,0,0,0.5))"></canvas>
+        <canvas id="cge-hourglass" width="72" height="112" style="display:none;flex-shrink:0"></canvas>
       </div>
     </div>
     <div id="cge-taskbar" style="position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#0f172a;border-top:1px solid #334155;
@@ -188,53 +188,71 @@
   const hourglass = (() => {
     const cv = overlay.querySelector("#cge-hourglass");
     const ctx = cv.getContext("2d");
-    const W = 90, H = 140, NECK = H / 2;
+    const W = 72, H = 112, CX = W / 2, NECK = H / 2;
+    const TOP = 10, BOT = H - 10;      // inner glass top/bottom
+    const WIDE = 22, NARROW = 2.5;     // half-widths at bulb mouth / neck
     let anim = null;
 
-    // glass outline: two trapezoid bulbs meeting at a thin neck
+    // inner wall half-width at height y (linear taper toward the neck)
+    const hwTop = (y) => NARROW + (WIDE - NARROW) * ((NECK - y) / (NECK - TOP));
+    const hwBot = (y) => NARROW + (WIDE - NARROW) * ((y - NECK) / (BOT - NECK));
+
     function glass(rot) {
       ctx.save();
-      ctx.translate(W / 2, H / 2);
+      ctx.translate(CX, NECK);
       ctx.rotate(rot);
-      ctx.translate(-W / 2, -H / 2);
+      ctx.translate(-CX, -NECK);
       ctx.strokeStyle = "#94a3b8";
       ctx.lineWidth = 2.5;
+      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(14, 8); ctx.lineTo(W - 14, 8);
-      ctx.moveTo(14, H - 8); ctx.lineTo(W - 14, H - 8);
-      ctx.moveTo(16, 10); ctx.lineTo(16, 22); ctx.lineTo(W / 2 - 4, NECK - 4); ctx.lineTo(W / 2 - 4, NECK + 4); ctx.lineTo(16, H - 22); ctx.lineTo(16, H - 10);
-      ctx.moveTo(W - 16, 10); ctx.lineTo(W - 16, 22); ctx.lineTo(W / 2 + 4, NECK - 4); ctx.lineTo(W / 2 + 4, NECK + 4); ctx.lineTo(W - 16, H - 22); ctx.lineTo(W - 16, H - 10);
+      // caps
+      ctx.moveTo(CX - WIDE - 4, TOP - 4); ctx.lineTo(CX + WIDE + 4, TOP - 4);
+      ctx.moveTo(CX - WIDE - 4, BOT + 4); ctx.lineTo(CX + WIDE + 4, BOT + 4);
+      // walls (straight taper, mirrored)
+      ctx.moveTo(CX - WIDE, TOP); ctx.lineTo(CX - NARROW, NECK); ctx.lineTo(CX - WIDE, BOT);
+      ctx.moveTo(CX + WIDE, TOP); ctx.lineTo(CX + NARROW, NECK); ctx.lineTo(CX + WIDE, BOT);
       ctx.stroke();
       ctx.restore();
     }
 
-    // sand at fraction f (0 = all top, 1 = all bottom)
-    function sand(f, grains) {
+    // Sand at fraction f (0 = all top, 1 = all bottom). Row-based fill inside
+    // the actual wall geometry, so sand can never render outside the glass.
+    function sand(f) {
       ctx.fillStyle = "#eab308";
-      const topGrains = Math.round(grains * (1 - f));
-      const botGrains = grains - topGrains;
-      // top heap: fills the upper bulb from the neck upward
-      for (let g = 0; g < topGrains; g++) {
-        const row = Math.floor(g / 9), col = g % 9;
-        const y = NECK - 8 - row * 4;
-        if (y < 24) continue;
-        const halfW = ((y - 22) / (NECK - 22)) * (W / 2 - 20) + 3;
-        const x = W / 2 - halfW + ((col + (row % 2) * 0.5) / 8.5) * halfW * 2;
-        ctx.fillRect(x, y, 2.5, 2.5);
+      const ROW = 3;
+      // total sand area = half of one bulb (looks right without measuring)
+      const rowsArea = [];
+      for (let y = NECK - 2; y > TOP + 2; y -= ROW) rowsArea.push(hwTop(y) * 2 * ROW);
+      const totalArea = rowsArea.reduce((a, b) => a + b, 0) * 0.55;
+
+      // top bulb: sand sits on the neck, surface drops as it drains
+      let budget = totalArea * (1 - f);
+      for (let y = NECK - 2; y > TOP + 2 && budget > 0; y -= ROW) {
+        const hw = hwTop(y) - 1.5;
+        const area = hw * 2 * ROW;
+        const frac = Math.min(1, budget / area);
+        budget -= area;
+        // partial top row shrinks toward the middle (sand cones down)
+        const w = hw * frac;
+        ctx.fillRect(CX - w, y - ROW, w * 2, ROW - 0.5);
       }
-      // bottom heap: piles up from the floor
-      for (let g = 0; g < botGrains; g++) {
-        const row = Math.floor(g / 9), col = g % 9;
-        const y = H - 14 - row * 4;
-        if (y < NECK + 8) continue;
-        const halfW = ((y - NECK) / (H / 2 - 22)) * (W / 2 - 20) + 3;
-        const x = W / 2 - halfW + ((col + (row % 2) * 0.5) / 8.5) * halfW * 2;
-        ctx.fillRect(x, y, 2.5, 2.5);
+
+      // bottom bulb: heap grows from the floor
+      let botBudget = totalArea * f;
+      for (let y = BOT - 2; y > NECK + 2 && botBudget > 0; y -= ROW) {
+        const hw = hwBot(y) - 1.5;
+        const area = hw * 2 * ROW;
+        const frac = Math.min(1, botBudget / area);
+        botBudget -= area;
+        const w = hw * frac;
+        ctx.fillRect(CX - w, y - ROW, w * 2, ROW - 0.5);
       }
-      // falling stream
+
+      // falling stream through the neck
       if (f > 0 && f < 1) {
-        for (let y = NECK; y < H - 16 - botGrains / 9 * 4; y += 5) {
-          ctx.fillRect(W / 2 - 1 + Math.sin(y * 1.7) * 0.8, y, 2, 3);
+        for (let y = NECK; y < BOT - 6; y += 5) {
+          ctx.fillRect(CX - 1 + Math.sin(y * 1.3 + Date.now() / 90) * 0.7, y, 2, 3);
         }
       }
     }
@@ -245,13 +263,12 @@
         cv.style.display = "block";
         cv.style.opacity = "1";
         cv.style.transition = "";
-        const grains = Math.max(30, Math.min(400, Math.round(durationMs / 500))); // ~2 grains/s, capped
         const t0 = Date.now();
         const tick = () => {
           const f = Math.min(1, (Date.now() - t0) / durationMs);
           ctx.clearRect(0, 0, W, H);
           if (f < 1) {
-            glass(0); sand(f, grains);
+            sand(f); glass(0);
             anim = requestAnimationFrame(tick);
           } else {
             // flip: quick rotation, then fade out
@@ -259,9 +276,11 @@
             const flip = () => {
               const ft = Math.min(1, (Date.now() - flipT0) / 600);
               ctx.clearRect(0, 0, W, H);
-              glass(ft * Math.PI); if (ft >= 1) { sand(0, grains); glass(Math.PI); }
+              glass(ft * Math.PI);
               if (ft < 1) anim = requestAnimationFrame(flip);
               else {
+                ctx.clearRect(0, 0, W, H);
+                sand(0); glass(0); // flipped: full again, ready position
                 cv.style.transition = "opacity 1.2s";
                 cv.style.opacity = "0";
                 setTimeout(() => { cv.style.display = "none"; }, 1300);
