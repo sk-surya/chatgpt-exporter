@@ -325,10 +325,12 @@
       if (document.activeElement !== pEl) pEl.value = Math.round(getMinPause() / 1000);
       const samples = JSON.parse(localStorage.getItem(LS_SAMPLES) || "[]");
       const e = JSON.parse(localStorage.getItem(LS_EPOCH) || "null");
+      const nextIn = Math.max(0, Math.max(lsNum(LS_SLOT), getPause()) - Date.now());
       infoEl.textContent =
         `learned samples (s/req): ${samples.map((s) => Math.round(s / 1000)).join(", ") || "none yet"}\n` +
         `current stretch: ${e ? `${e.ok} ok over ${Math.round((Date.now() - e.start) / 1000)}s` : "—"}\n` +
-        `floor: ${lsNum(LS_FLOOR) ? Math.round(lsNum(LS_FLOOR) / 1000) + "s" : "none"}`;
+        `floor: ${lsNum(LS_FLOOR) ? Math.round(lsNum(LS_FLOOR) / 1000) + "s" : "none"}\n` +
+        `next request in: ${Math.round(nextIn / 1000)}s`;
     }, 1000);
   }
 
@@ -340,7 +342,11 @@
       const pauseWait = getPause() - Date.now();
       if (pauseWait > 0) { await sleep(Math.min(pauseWait, 5000) + Math.random() * 1000); continue; }
       const now = Date.now();
-      const slot = Math.max(now, lsNum(LS_SLOT));
+      // Clamp the reservation backlog: workers that reserve a slot but then hit
+      // a pause never consume it, and the leaked slots push the queue minutes
+      // into the future (observed as "stuck"). Never queue deeper than one
+      // slot per worker.
+      const slot = Math.max(now, Math.min(lsNum(LS_SLOT), now + getDelay() * CONCURRENCY));
       // ±25% jitter: evenly-metronomed requests are bot-obvious and can align
       // with the window edge; humans are bursty-irregular.
       localStorage.setItem(LS_SLOT, slot + getDelay() * (0.75 + Math.random() * 0.5));
