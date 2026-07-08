@@ -795,6 +795,7 @@
   const snapshot = await cacheGet("meta", "conversationList");
   if (snapshot && Date.now() - snapshot.at < 86400000 && snapshot.items.length >= cachedConvoCount) {
     conversations = snapshot.items;
+    for (const c of conversations) seenIds.add(c.id); // dedup base for the cache merge
     ui.log(`List snapshot from cache (${conversations.length} conversations, ${Math.round((Date.now() - snapshot.at) / 60000)}min old)`);
   } else {
     if (snapshot && snapshot.items.length < cachedConvoCount) {
