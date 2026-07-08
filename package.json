@@ -2,6 +2,7 @@
   "name": "chatgpt-exporter",
   "version": "1.0.4",
   "description": "Export all your ChatGPT conversations as JSON + Markdown + HTML in a verified ZIP, from the browser console or a bookmarklet.",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "scripts": {

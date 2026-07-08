@@ -64,3 +64,7 @@ Releases are automated: when the version in `package.json` changes on `main`, CI
 ## Credits
 
 Originally based on [ocombe's exporter gist](https://gist.github.com/ocombe/1d7604bd29a91ceb716304ef8b5aa4b5). Rebuilt and extended in pair-programming sessions with Claude Fable 5.
+
+## License
+
+[MIT](LICENSE)
