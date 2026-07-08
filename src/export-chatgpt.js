@@ -804,19 +804,23 @@
       // The list endpoint excludes archived chats by default; fetch both.
       for (const archived of [false, true]) {
         let offset = 0;
+        let reportedTotal = null;
         while (true) {
           const data = await apiGet(`conversations?offset=${offset}&limit=${PAGE_SIZE}&is_archived=${archived}`);
           const items = data.items || [];
-          if (!items.length) break;
+          if (reportedTotal === null && data.total != null) {
+            reportedTotal = data.total;
+            ui.log(`${archived ? "Archived" : "Active"} list: server reports total ${reportedTotal}`);
+          }
+          if (!items.length) break; // empty page is the ONLY end condition
           for (const it of items) {
             if (!seenIds.has(it.id)) { seenIds.add(it.id); conversations.push(it); }
           }
           ui.set(`Fetching ${archived ? "archived" : "active"} list... ${conversations.length} total`);
-          offset += PAGE_SIZE;
-          // Trust total only to stop EARLY when present; a missing/zero total
-          // must keep paging until an empty page, not stop after page one.
-          if (data.total && offset >= data.total) break;
-          if (items.length < PAGE_SIZE) break; // short page = end of list
+          // Advance by what we actually received: the endpoint can return
+          // partial pages mid-list, and both trusting `total` and breaking on
+          // a short page have truncated real exports in the field.
+          offset += items.length;
         }
         ui.log(`${archived ? "Archived" : "Active"} list done: ${conversations.length} conversations so far`);
       }
