@@ -353,11 +353,20 @@
   // requests, every success decays it back down. State lives in localStorage so
   // ALL tabs running the exporter share ONE pause window and ONE request pacer -
   // the server rate-limits per account, not per tab.
-  const LS_PAUSE = "cge:pausedUntil", LS_DELAY = "cge:delayMs", LS_SLOT = "cge:nextSlot";
-  const LS_429S = "cge:429s", LS_OK = "cge:okSinceLimit";
-  const LS_FLOOR = "cge:floorMs", LS_FLOOR_TS = "cge:floorTs";
-  const LS_EPOCH = "cge:epoch", LS_SAMPLES = "cge:rateSamples";
-  const LS_MINPAUSE = "cge:minPauseMs";
+  // Keys are account-scoped like the IndexedDB cache: the server's quota is
+  // per account, so two accounts in one profile must not share one throttle.
+  const NS = `cge:${accountId}:`;
+  const LS_PAUSE = NS + "pausedUntil", LS_DELAY = NS + "delayMs", LS_SLOT = NS + "nextSlot";
+  const LS_429S = NS + "429s", LS_OK = NS + "okSinceLimit";
+  const LS_FLOOR = NS + "floorMs", LS_FLOOR_TS = NS + "floorTs";
+  const LS_EPOCH = NS + "epoch", LS_SAMPLES = NS + "rateSamples";
+  const LS_MINPAUSE = NS + "minPauseMs";
+  // one-time migration from the old unscoped keys (pre account-scoping)
+  for (const k of ["pausedUntil", "delayMs", "nextSlot", "429s", "okSinceLimit", "floorMs", "floorTs", "epoch", "rateSamples", "minPauseMs"]) {
+    const old = localStorage.getItem("cge:" + k);
+    if (old !== null && localStorage.getItem(NS + k) === null) localStorage.setItem(NS + k, old);
+    localStorage.removeItem("cge:" + k);
+  }
   // stop on first 429, wait at least 1min 5s before testing again (live-editable)
   const getMinPause = () => lsNum(LS_MINPAUSE) || 65000;
   const lsNum = (k) => Number(localStorage.getItem(k)) || 0;
@@ -1365,6 +1374,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const lh = new DataView(new ArrayBuffer(30));
       lh.setUint32(0, 0x04034b50, true);
       lh.setUint16(4, 20, true);
+      lh.setUint16(6, 0x0800, true); // UTF-8 names (umlauts in titles)
       lh.setUint16(8, 0, true); // store
       lh.setUint32(14, crc, true);
       lh.setUint32(18, dataBytes.length, true);
@@ -1378,6 +1388,7 @@ document.addEventListener('DOMContentLoaded', () => {
       cd.setUint32(0, 0x02014b50, true);
       cd.setUint16(4, 20, true);
       cd.setUint16(6, 20, true);
+      cd.setUint16(8, 0x0800, true); // UTF-8 names
       cd.setUint16(10, 0, true); // store
       cd.setUint32(16, crc, true);
       cd.setUint32(20, dataBytes.length, true);
@@ -1388,6 +1399,8 @@ document.addEventListener('DOMContentLoaded', () => {
       cdParts.push(new Uint8Array(cd.buffer), pathBytes);
 
       offset += 30 + pathBytes.length + dataBytes.length;
+      // ponytail: no ZIP64. uint32 offsets corrupt silently past 4GB, so fail loudly instead.
+      if (offset > 0xfffff000) throw new Error("Archive exceeds 4GB (ZIP64 not supported) - use partial saves to split the export");
     }
 
     const cdSize = cdParts.reduce((s, p) => s + p.length, 0);
