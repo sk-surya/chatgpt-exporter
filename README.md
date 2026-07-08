@@ -7,6 +7,8 @@ Export every ChatGPT conversation you have as JSON, Markdown and HTML in a verif
 
 The hard part is not the export, it is the undocumented account-wide rate limit that ChatGPT enforces on its backend API. This exporter ships a self-tuning throttle that measures the server's real tolerated rate, stops on the first 429, learns from every stretch between rate limits, and persists everything it downloaded in IndexedDB so a restart never re-spends quota on data you already have.
 
+> **Important: use v1.0.7 or newer.** Earlier versions could silently lose most of an export on long runs. The conversation list endpoint under-reports under load (observed: a reported total of 101 against 1200+ real conversations), HTTP 412 "conversation is stale" responses were treated as permanent failures instead of the retryable server hiccups they are, and expired session tokens failed every request after a few hours. v1.0.7 treats the local cache as ground truth for what exists, retries 412s with backoff plus a recovery sweep, refreshes the token mid-run, and processes cached conversations first so a restart is productive within seconds.
+
 ![ChatGPT Exporter running: progress popup, taskbar with worker chips and log console, live throttle tuner, ETA clock and partial-save buttons](docs/screenshot.png)
 
 ## Features
