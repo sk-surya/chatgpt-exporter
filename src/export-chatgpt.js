@@ -260,11 +260,16 @@
 
   ui.set("Getting session token...");
   let token, accountId;
-  try {
+  async function refreshToken() {
     const session = await fetch("/api/auth/session").then((r) => r.json());
+    if (!session.accessToken) throw new Error("No accessToken in session");
+    const changed = session.accessToken !== token;
     token = session.accessToken;
-    if (!token) throw new Error("No accessToken in session");
-    accountId = session.user?.id || "default";
+    accountId = accountId || session.user?.id || "default";
+    return changed;
+  }
+  try {
+    await refreshToken();
   } catch (e) {
     ui.error("Failed to get session token. Are you logged in?");
     return;
@@ -564,7 +569,19 @@
         }
         continue;
       }
-      // 4xx like 412/404: permanent for this URL, retrying won't help
+      // 401/403/412 can mean the bearer token expired mid-run (long exports
+      // outlive it). Refresh from the still-alive browser session and retry;
+      // if the token didn't change, the failure is genuinely about this URL.
+      if ((resp.status === 401 || resp.status === 403 || resp.status === 412) && !options._retriedAuth) {
+        const changed = await refreshToken().catch(() => false);
+        if (changed) {
+          ui.log(`HTTP ${resp.status}: session token expired, refreshed, retrying`);
+          if (options.headers?.Authorization) options.headers.Authorization = `Bearer ${token}`;
+          options._retriedAuth = true;
+          continue;
+        }
+      }
+      // remaining 4xx like 404: permanent for this URL, retrying won't help
       throw new Error(`HTTP ${resp.status}`);
     }
   }
