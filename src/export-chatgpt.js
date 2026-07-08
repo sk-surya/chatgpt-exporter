@@ -99,10 +99,9 @@
       el.append(dot, label);
       if (key === "throttle") {
         // status pill, not a session chip: always rightmost, visually distinct;
-        // click opens the live throttle editor. The account badge (id below)
-        // owns the auto-margin when present, regardless of creation order.
+        // click opens the live throttle editor
         el.style.order = "99";
-        el.style.marginLeft = this.chipsEl.querySelector("#cge-acc") ? "0" : "auto";
+        el.style.marginLeft = "auto";
         el.style.background = "transparent";
         el.style.border = "1px solid #475569";
         el.style.color = "#e2e8f0";
@@ -333,18 +332,15 @@
     return;
   }
 
-  // Account badge: a pill inside the taskbar (just left of the throttle pill)
-  // showing which account this run and its cache are bound to. Lives in the
-  // bar so it can never overlap the log console when it opens or resizes.
+  // Account badge, bottom left above the taskbar: shows which account this
+  // run (and its cache) is bound to. z-index below the taskbar (100000) so
+  // the log console simply covers it when opened or resized.
   {
     const badge = document.createElement("div");
     badge.id = "cge-acc";
-    badge.style.cssText = "order:98;margin-left:auto;padding:5px 10px;border-radius:6px;border:1px solid #334155;font-size:11px;color:#64748b;white-space:nowrap;flex-shrink:0";
-    badge.textContent = `acc ${String(accountId).slice(0, 12)}`;
-    badge.title = `account: ${accountId}`;
-    ui.chipsEl.appendChild(badge);
-    // badge takes over the auto-margin; throttle pill stays hard right
-    if (ui.chips.throttle) ui.chips.throttle.el.style.marginLeft = "0";
+    badge.style.cssText = "position:fixed;left:12px;bottom:48px;z-index:99999;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:5px 10px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#64748b";
+    badge.textContent = `account: ${accountId}`;
+    overlay.appendChild(badge);
   }
 
   // ── API helper ──────────────────────────────────────────────────────
@@ -367,6 +363,16 @@
     if (old !== null && localStorage.getItem(NS + k) === null) localStorage.setItem(NS + k, old);
     localStorage.removeItem("cge:" + k);
   }
+  // legacy samples were plain perReq numbers; lift them into the rich shape
+  // the stats table expects, otherwise they are filtered out as garbage
+  try {
+    const raw = JSON.parse(localStorage.getItem(NS + "rateSamples") || "[]");
+    if (raw.some((s) => typeof s === "number")) {
+      localStorage.setItem(NS + "rateSamples", JSON.stringify(
+        raw.map((s) => (typeof s === "number" ? { at: Date.now(), ok: 0, secs: 0, perReq: s } : s))
+      ));
+    }
+  } catch {}
   // stop on first 429, wait at least 1min 5s before testing again (live-editable)
   const getMinPause = () => lsNum(LS_MINPAUSE) || 65000;
   const lsNum = (k) => Number(localStorage.getItem(k)) || 0;
