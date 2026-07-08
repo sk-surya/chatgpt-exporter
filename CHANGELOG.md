@@ -1,3 +1,15 @@
+## v1.0.7 (2026-07-08)
+
+- v1.0.7
+- README: important notice to use v1.0.7+
+- Seed seenIds from the snapshot path so the cache merge cannot duplicate the list
+- Process cached conversations first, uncached last
+- Export the union of fetched list and cached conversations
+- List pagination: page until an empty page, advance by received count
+- Test harness: count() on IndexedDB stub
+- Guard against truncated conversation lists poisoning the snapshot
+- chore: update CHANGELOG for v1.0.6 [skip ci]
+
 ## v1.0.6 (2026-07-08)
 
 - v1.0.6
