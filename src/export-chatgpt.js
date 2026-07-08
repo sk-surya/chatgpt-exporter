@@ -569,15 +569,21 @@
         }
         continue;
       }
-      // 401/403/412 can mean the bearer token expired mid-run (long exports
-      // outlive it). Refresh from the still-alive browser session and retry;
-      // if the token didn't change, the failure is genuinely about this URL.
-      if ((resp.status === 401 || resp.status === 403 || resp.status === 412) && !options._retriedAuth) {
-        const changed = await refreshToken().catch(() => false);
-        if (changed) {
-          ui.log(`HTTP ${resp.status}: session token expired, refreshed, retrying`);
-          if (options.headers?.Authorization) options.headers.Authorization = `Bearer ${token}`;
-          options._retriedAuth = true;
+      // 401/403/412 can mean an expired token OR (412, observed in the field)
+      // the rate limiter answering under pressure. Refresh the token, then
+      // treat it like a soft failure with its own escalating backoff, up to
+      // 3 attempts, before giving up on this URL.
+      if (resp.status === 401 || resp.status === 403 || resp.status === 412) {
+        options._authRetries = (options._authRetries || 0) + 1;
+        if (options._authRetries <= 3) {
+          const body = await resp.text().catch(() => "");
+          ui.log(`HTTP ${resp.status} (attempt ${options._authRetries}/3), body: ${body.slice(0, 160) || "(empty)"}`);
+          const changed = await refreshToken().catch(() => false);
+          if (changed) {
+            ui.log(`Session token had expired, refreshed`);
+            if (options.headers?.Authorization) options.headers.Authorization = `Bearer ${token}`;
+          }
+          await sleep(15000 * options._authRetries + Math.random() * 5000);
           continue;
         }
       }
@@ -860,7 +866,7 @@
       ui.workerLog(workerId, `FAILED #${i + 1} "${title.slice(0, 40)}": ${e.message}`);
     }
 
-    done++;
+    done = Math.min(done + 1, total); // recovery sweep revisits indices
     stats.done = done;
     stats.recent.push(Date.now());
     if (stats.recent.length > 20) stats.recent.shift();
@@ -890,7 +896,23 @@
     })
   );
   requestRestart = null; // pool has drained; too late to restart
-  ui.log(`Text pass done: ${total - failed} ok, ${failed} failed, all conversations secured`);
+  ui.log(`Text pass done: ${total - failed} ok, ${failed} failed`);
+
+  // Recovery sweep: transient failures (412 storms, network blips) often
+  // clear once the first pass finishes; give every failed index one more try.
+  const failedIdx = [...downloaded.keys()].filter((i) => !downloaded[i]);
+  if (failedIdx.length && failedIdx.length < total) {
+    ui.log(`Recovery sweep: retrying ${failedIdx.length} failed conversations`);
+    failed = 0;
+    let nf = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, failedIdx.length) }, async (_, w) => {
+        while (nf < failedIdx.length) await processConversation(failedIdx[nf++], w);
+        ui.worker(w, "idle", "gray");
+      })
+    );
+    ui.log(`Recovery sweep done: ${failedIdx.length - failed} recovered, ${failed} still failing`);
+  }
 
   // ── Pass 2: Download files (text is already safe) ───────────────────
   // Cached files cost nothing; only new ones spend quota.
