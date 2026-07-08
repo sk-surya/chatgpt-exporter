@@ -21,7 +21,15 @@ function fakeEl() {
     getBoundingClientRect: () => ({ bottom: 0 }),
     get parentElement() { return fakeEl(); },
     offsetHeight: 150,
-    getContext: () => new Proxy({}, { get: (t, p) => (p === "canvas" ? fakeEl() : () => {}) }),
+    // recursive stub: any method returns another stub (gradients, paths, ...)
+    getContext: () => {
+      const stub = new Proxy(function () {}, {
+        get: (t, p) => (p === "canvas" ? fakeEl() : stub),
+        apply: () => stub,
+        set: () => true,
+      });
+      return stub;
+    },
     click() { this.clicked = true; downloadedZipHref = this.href; },
     set download(v) { zipName = v; },
   };
