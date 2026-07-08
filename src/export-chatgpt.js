@@ -574,9 +574,16 @@
       // treat it like a soft failure with its own escalating backoff, up to
       // 3 attempts, before giving up on this URL.
       if (resp.status === 401 || resp.status === 403 || resp.status === 412) {
+        const body = await resp.text().catch(() => "");
+        // conversation_precondition_failed never resolves via direct retries
+        // (the app fixes it with in-memory state); fail fast, the browser-
+        // assist iframe pass is the tool that recovers these.
+        if (body.includes("conversation_precondition_failed")) {
+          ui.log(`HTTP 412 stale conversation, deferring to browser-assist`);
+          throw new Error("HTTP 412 (stale)");
+        }
         options._authRetries = (options._authRetries || 0) + 1;
         if (options._authRetries <= 3) {
-          const body = await resp.text().catch(() => "");
           ui.log(`HTTP ${resp.status} (attempt ${options._authRetries}/3), body: ${body.slice(0, 160) || "(empty)"}`);
           const changed = await refreshToken().catch(() => false);
           if (changed) {
@@ -944,6 +951,7 @@
   // ── Pass 1: Download conversations + files ──────────────────────────
 
   const zipEntries = [];
+  const staleIdx = new Set(); // 412-stale conversations, browser-assist only
   let failed = 0;
   let totalFiles = 0;
   let failedFiles = 0;
@@ -983,8 +991,14 @@
       ui.workerLog(workerId, `done #${i + 1}${fileRefs.length ? ` (${fileRefs.length} files queued)` : ""}`);
     } catch (e) {
       failed++;
-      ui.worker(workerId, `#${i + 1} FAILED`, "red");
-      ui.workerLog(workerId, `FAILED #${i + 1} "${title.slice(0, 40)}": ${e.message}`);
+      if (e.message.includes("(stale)")) {
+        staleIdx.add(i); // skip the recovery sweep, go straight to browser-assist
+        ui.worker(workerId, `#${i + 1} stale`, "yellow");
+        ui.workerLog(workerId, `stale #${i + 1} "${title.slice(0, 40)}", queued for browser-assist`);
+      } else {
+        ui.worker(workerId, `#${i + 1} FAILED`, "red");
+        ui.workerLog(workerId, `FAILED #${i + 1} "${title.slice(0, 40)}": ${e.message}`);
+      }
     }
 
     done = Math.min(done + 1, total); // recovery sweep revisits indices
@@ -1021,7 +1035,7 @@
 
   // Recovery sweep: transient failures (412 storms, network blips) often
   // clear once the first pass finishes; give every failed index one more try.
-  const failedIdx = [...downloaded.keys()].filter((i) => !downloaded[i]);
+  const failedIdx = [...downloaded.keys()].filter((i) => !downloaded[i] && !staleIdx.has(i));
   if (failedIdx.length && failedIdx.length < total) {
     ui.log(`Recovery sweep: retrying ${failedIdx.length} failed conversations`);
     failed = 0;
