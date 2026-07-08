@@ -652,6 +652,47 @@
   });
   let cacheHits = 0, fileCacheHits = 0;
 
+  // One-time migration from the legacy unscoped DB (pre account-scoping):
+  // it can still hold conversations and downloaded files that would
+  // otherwise be re-fetched. Copy anything the scoped DB doesn't have yet.
+  if (idb) {
+    try {
+      const names = (await indexedDB.databases()).map((d) => d.name);
+      if (names.includes("chatgpt-exporter-cache")) {
+        const legacy = await new Promise((resolve) => {
+          const r = indexedDB.open("chatgpt-exporter-cache");
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => resolve(null);
+        });
+        if (legacy) {
+          let moved = 0;
+          for (const store of ["convos", "files"]) {
+            if (!legacy.objectStoreNames.contains(store)) continue;
+            const entries = await new Promise((resolve) => {
+              const out = [];
+              const req = legacy.transaction(store).objectStore(store).openCursor();
+              req.onsuccess = () => {
+                const cur = req.result;
+                if (!cur) return resolve(out);
+                out.push([cur.key, cur.value]);
+                cur.continue();
+              };
+              req.onerror = () => resolve(out);
+            });
+            for (const [k, v] of entries) {
+              if ((await cacheGet(store, k)) === undefined) { await cachePut(store, k, v); moved++; }
+            }
+          }
+          legacy.close();
+          if (moved) {
+            ui.log(`Migrated ${moved} entries from the legacy cache`);
+            indexedDB.deleteDatabase("chatgpt-exporter-cache");
+          }
+        }
+      }
+    } catch {}
+  }
+
   // Clear cache: confirmed, wipes IndexedDB, then restarts the download from #1.
   overlay.querySelector("#cge-clearcache").addEventListener("click", async () => {
     if (!confirm("Clear the exporter cache and re-download everything from scratch?")) return;
@@ -992,6 +1033,24 @@
       })
     );
     ui.log(`Recovery sweep done: ${failedIdx.length - failed} recovered, ${failed} still failing`);
+  }
+
+  // Conversations that never fetched (e.g. persistent 412 "stale", which the
+  // web app resolves via in-memory state we cannot replicate) get a clickable
+  // report in the ZIP so nothing goes missing silently.
+  const stillFailed = [...downloaded.keys()].filter((i) => !downloaded[i]).map((i) => conversations[i]);
+  if (stillFailed.length) {
+    const lines = [
+      "# Conversations not exported",
+      "",
+      `${stillFailed.length} conversations could not be fetched (persistent HTTP 412 "conversation is stale" or repeated errors).`,
+      "They open fine in the ChatGPT UI. Save them manually or re-run the exporter later, the cache keeps everything already exported.",
+      "",
+      ...stillFailed.map((c) => `- [${(c.title || "Untitled").replace(/[\[\]]/g, "")}](https://chatgpt.com/c/${c.id})`),
+      "",
+    ];
+    zipEntries.push({ path: "stale-conversations.md", data: lines.join("\n") });
+    ui.log(`Wrote stale-conversations.md (${stillFailed.length} conversations) into the ZIP`);
   }
 
   // ── Pass 2: Download files (text is already safe) ───────────────────
