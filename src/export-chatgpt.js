@@ -592,9 +592,22 @@
     }
   }
 
+  // The web app proves it knows about pending server-side updates via the
+  // x-oai-is-pending-updates header (token from the __Secure-oai-is cookie).
+  // Without it, recently-active conversations 412 "stale" forever. Best
+  // effort: the cookie may be HttpOnly in some setups, then this is empty
+  // and those conversations keep failing like before.
+  function pendingUpdatesHeader() {
+    try {
+      const m = document.cookie.match(/(?:^|;\s*)__Secure-oai-is=([^;]+)/);
+      if (m) return { "x-oai-is-pending-updates": JSON.stringify({ v: 3, updates: [decodeURIComponent(m[1])] }) };
+    } catch {}
+    return {};
+  }
+
   async function apiGet(path) {
     const resp = await fetchWithRetry(`${API}/${path}`, {
-      headers: { ...HEADERS, Authorization: `Bearer ${token}` },
+      headers: { ...HEADERS, Authorization: `Bearer ${token}`, ...pendingUpdatesHeader() },
     });
     return resp.json();
   }
