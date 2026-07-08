@@ -188,71 +188,112 @@
     const cv = overlay.querySelector("#cge-hourglass");
     const ctx = cv.getContext("2d");
     const W = 72, H = 112, CX = W / 2, NECK = H / 2;
-    const TOP = 10, BOT = H - 10;      // inner glass top/bottom
-    const WIDE = 22, NARROW = 2.5;     // half-widths at bulb mouth / neck
+    const TOP = 12, BOT = H - 12;      // inner glass top/bottom
+    const WIDE = 24, NARROW = 3;       // half-widths at bulb mouth / neck
     let anim = null;
 
-    // inner wall half-width at height y (linear taper toward the neck)
-    const hwTop = (y) => NARROW + (WIDE - NARROW) * ((NECK - y) / (NECK - TOP));
-    const hwBot = (y) => NARROW + (WIDE - NARROW) * ((y - NECK) / (BOT - NECK));
+    // Curved bulb wall: half-width at distance u (0=neck, 1=mouth) follows a
+    // power curve, so the glass bellies out like a real hourglass instead of
+    // a straight X. Same function drives the outline AND the sand fill.
+    const bulb = (u) => NARROW + (WIDE - NARROW) * Math.pow(u, 0.55);
+    const hwTop = (y) => bulb((NECK - y) / (NECK - TOP));
+    const hwBot = (y) => bulb((y - NECK) / (BOT - NECK));
+
+    function wallPath(side) { // side: -1 left, +1 right; top mouth -> neck -> bottom mouth
+      ctx.moveTo(CX + side * hwTop(TOP), TOP);
+      for (let y = TOP; y <= NECK; y += 2) ctx.lineTo(CX + side * hwTop(y), y);
+      for (let y = NECK; y <= BOT; y += 2) ctx.lineTo(CX + side * hwBot(y), y);
+    }
 
     function glass(rot) {
       ctx.save();
       ctx.translate(CX, NECK);
       ctx.rotate(rot);
       ctx.translate(-CX, -NECK);
+      // walls
       ctx.strokeStyle = "#94a3b8";
       ctx.lineWidth = 2.5;
       ctx.lineCap = "round";
+      ctx.lineJoin = "round";
       ctx.beginPath();
-      // caps
-      ctx.moveTo(CX - WIDE - 4, TOP - 4); ctx.lineTo(CX + WIDE + 4, TOP - 4);
-      ctx.moveTo(CX - WIDE - 4, BOT + 4); ctx.lineTo(CX + WIDE + 4, BOT + 4);
-      // walls (straight taper, mirrored)
-      ctx.moveTo(CX - WIDE, TOP); ctx.lineTo(CX - NARROW, NECK); ctx.lineTo(CX - WIDE, BOT);
-      ctx.moveTo(CX + WIDE, TOP); ctx.lineTo(CX + NARROW, NECK); ctx.lineTo(CX + WIDE, BOT);
+      wallPath(-1);
+      wallPath(1);
       ctx.stroke();
+      // wooden caps: rounded bars slightly wider than the bulb mouths
+      ctx.fillStyle = "#64748b";
+      const capW = WIDE * 2 + 12, capH = 5;
+      for (const y of [TOP - capH - 1, BOT + 1]) {
+        ctx.beginPath();
+        ctx.roundRect(CX - capW / 2, y, capW, capH, 2.5);
+        ctx.fill();
+      }
       ctx.restore();
     }
 
-    // Sand at fraction f (0 = all top, 1 = all bottom). Row-based fill inside
-    // the actual wall geometry, so sand can never render outside the glass.
+    // Sand at fraction f (0 = all top, 1 = all bottom). Smooth filled shapes,
+    // not rows: a pool with a funnel dip up top, a conical mound below, a
+    // continuous stream between them.
+    const INSET = 2.2; // keep sand just inside the glass walls
     function sand(f) {
-      ctx.fillStyle = "#eab308";
-      const ROW = 3;
-      // total sand area = half of one bulb (looks right without measuring)
-      const rowsArea = [];
-      for (let y = NECK - 2; y > TOP + 2; y -= ROW) rowsArea.push(hwTop(y) * 2 * ROW);
-      const totalArea = rowsArea.reduce((a, b) => a + b, 0) * 0.55;
+      const grad = ctx.createLinearGradient(0, TOP, 0, BOT);
+      grad.addColorStop(0, "#fbbf24");
+      grad.addColorStop(1, "#d97706");
+      ctx.fillStyle = grad;
 
-      // top bulb: sand sits on the neck, surface drops as it drains
-      let budget = totalArea * (1 - f);
-      for (let y = NECK - 2; y > TOP + 2 && budget > 0; y -= ROW) {
-        const hw = hwTop(y) - 1.5;
-        const area = hw * 2 * ROW;
-        const frac = Math.min(1, budget / area);
-        budget -= area;
-        // partial top row shrinks toward the middle (sand cones down)
-        const w = hw * frac;
-        ctx.fillRect(CX - w, y - ROW, w * 2, ROW - 0.5);
+      // Top pool: numerically find the surface height whose enclosed area is
+      // (1-f) of the initial fill (curved walls, no closed form).
+      const yFull = NECK - (NECK - TOP) * 0.62; // start ~60% full
+      const area = (yLimit) => {
+        let a = 0;
+        for (let y = NECK; y > yLimit; y -= 1) a += hwTop(y) * 2;
+        return a;
+      };
+      const target = area(yFull) * (1 - f);
+      let yS = NECK;
+      for (let a = 0; yS > yFull && a < target; yS -= 1) a += hwTop(yS) * 2;
+      const U = NECK - yS;
+      if (U > 1.5) {
+        const hwS = Math.max(0.5, hwTop(yS) - INSET);
+        const dip = Math.min(6, U * 0.45); // funnel dip toward the neck hole
+        ctx.beginPath();
+        ctx.moveTo(CX - hwS, yS);
+        ctx.quadraticCurveTo(CX, yS + dip, CX + hwS, yS); // concave surface
+        // side edges hug the curved wall down to the neck
+        for (let y = yS; y <= NECK - 1; y += 2) ctx.lineTo(CX + Math.max(0.5, hwTop(y) - INSET), y);
+        ctx.lineTo(CX, NECK);
+        for (let y = NECK - 1; y >= yS; y -= 2) ctx.lineTo(CX - Math.max(0.5, hwTop(y) - INSET), y);
+        ctx.closePath();
+        ctx.fill();
       }
 
-      // bottom bulb: heap grows from the floor
-      let botBudget = totalArea * f;
-      for (let y = BOT - 2; y > NECK + 2 && botBudget > 0; y -= ROW) {
-        const hw = hwBot(y) - 1.5;
-        const area = hw * 2 * ROW;
-        const frac = Math.min(1, botBudget / area);
-        botBudget -= area;
-        const w = hw * frac;
-        ctx.fillRect(CX - w, y - ROW, w * 2, ROW - 0.5);
+      // Bottom mound: base pinned to the floor, conical top peaking at center.
+      const h = Math.pow(f, 0.7) * (BOT - NECK - 8) * 0.8; // fast early growth
+      if (h > 1) {
+        const yPeak = BOT - 2 - h;
+        const yEdge = BOT - 2 - h * 0.25; // sides sit lower than the peak
+        const hwE = Math.max(1, hwBot(yEdge) - INSET);
+        ctx.beginPath();
+        ctx.moveTo(CX - hwE, yEdge);
+        ctx.quadraticCurveTo(CX, yPeak - h * 0.15, CX + hwE, yEdge); // rounded peak
+        // sides follow the curved bowl down to the floor
+        for (let y = yEdge; y <= BOT - 2; y += 2) ctx.lineTo(CX + Math.max(1, hwBot(y) - INSET), y);
+        ctx.lineTo(CX - Math.max(1, hwBot(BOT - 2) - INSET), BOT - 2);
+        for (let y = BOT - 2; y >= yEdge; y -= 2) ctx.lineTo(CX - Math.max(1, hwBot(y) - INSET), y);
+        ctx.closePath();
+        ctx.fill();
       }
 
-      // falling stream through the neck
+      // Continuous stream with a faint sway, neck to mound peak
       if (f > 0 && f < 1) {
-        for (let y = NECK; y < BOT - 6; y += 5) {
-          ctx.fillRect(CX - 1 + Math.sin(y * 1.3 + Date.now() / 90) * 0.7, y, 2, 3);
+        const yEnd = BOT - 3 - h;
+        ctx.beginPath();
+        ctx.moveTo(CX, NECK - 1);
+        for (let y = NECK; y <= yEnd; y += 3) {
+          ctx.lineTo(CX + Math.sin(y * 0.35 + Date.now() / 120) * 0.6, y);
         }
+        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = "#f59e0b";
+        ctx.stroke();
       }
     }
 
