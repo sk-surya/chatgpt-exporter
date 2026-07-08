@@ -41,7 +41,15 @@
           </div>
           <p id="cge-detail" style="color:#64748b;font-size:13px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></p>
         </div>
-        <canvas id="cge-hourglass" width="72" height="112" style="display:none;flex-shrink:0"></canvas>
+        <div id="cge-ring" style="display:none;position:relative;width:72px;height:72px;flex-shrink:0">
+          <svg viewBox="0 0 72 72" width="72" height="72" style="transform:rotate(-90deg)">
+            <circle cx="36" cy="36" r="31" fill="none" stroke="#334155" stroke-width="5"/>
+            <circle id="cge-ring-fg" cx="36" cy="36" r="31" fill="none" stroke="#ef4444" stroke-width="5"
+              stroke-linecap="round" stroke-dasharray="194.8" stroke-dashoffset="0" style="transition:stroke-dashoffset 0.25s linear"/>
+          </svg>
+          <div id="cge-ring-text" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+            font-family:ui-monospace,Menlo,monospace;font-size:16px;font-weight:600;color:#e2e8f0"></div>
+        </div>
       </div>
     </div>
     <div id="cge-taskbar" style="position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#0f172a;border-top:1px solid #334155;
@@ -90,7 +98,8 @@
     chip(key, name) {
       if (this.chips[key]) return this.chips[key];
       const el = document.createElement("div");
-      el.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;background:#1e293b;border:1px solid #334155;font-size:12px;color:#cbd5e1;cursor:pointer;white-space:nowrap;flex-shrink:0;max-width:280px;user-select:none";
+      // worker chips shrink (min-width + ellipsis) so the bar fits small screens
+      el.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;background:#1e293b;border:1px solid #334155;font-size:12px;color:#cbd5e1;cursor:pointer;white-space:nowrap;flex-shrink:1;min-width:52px;max-width:280px;overflow:hidden;user-select:none";
       const dot = document.createElement("span");
       dot.style.cssText = "width:8px;height:8px;border-radius:50%;background:#64748b;flex-shrink:0";
       const label = document.createElement("span");
@@ -106,6 +115,7 @@
         el.style.border = "1px solid #475569";
         el.style.color = "#e2e8f0";
         el.style.fontWeight = "600";
+        el.style.flexShrink = "0"; // status must stay readable, workers shrink instead
         el.addEventListener("click", () => {
           const panel = overlay.querySelector("#cge-tuner");
           panel.style.display = panel.style.display === "none" ? "block" : "none";
@@ -181,159 +191,46 @@
   overlay.querySelector("#cge-version").textContent = VERSION;
   ui.log(`Exporter ${VERSION} started`);
 
-  // ── Hourglass: a REAL visible timeout ───────────────────────────────
-  // Grain count scales with the pause length; the sand runs through exactly
-  // once over the real duration, then the glass flips and fades out.
-  const hourglass = (() => {
-    const cv = overlay.querySelector("#cge-hourglass");
-    const ctx = cv.getContext("2d");
-    const W = 72, H = 112, CX = W / 2, NECK = H / 2;
-    const TOP = 12, BOT = H - 12;      // inner glass top/bottom
-    const WIDE = 24, NARROW = 3;       // half-widths at bulb mouth / neck
-    let anim = null;
-
-    // Curved bulb wall: half-width at distance u (0=neck, 1=mouth) follows a
-    // power curve, so the glass bellies out like a real hourglass instead of
-    // a straight X. Same function drives the outline AND the sand fill.
-    const bulb = (u) => NARROW + (WIDE - NARROW) * Math.pow(u, 0.55);
-    const hwTop = (y) => bulb((NECK - y) / (NECK - TOP));
-    const hwBot = (y) => bulb((y - NECK) / (BOT - NECK));
-
-    function wallPath(side) { // side: -1 left, +1 right; top mouth -> neck -> bottom mouth
-      ctx.moveTo(CX + side * hwTop(TOP), TOP);
-      for (let y = TOP; y <= NECK; y += 2) ctx.lineTo(CX + side * hwTop(y), y);
-      for (let y = NECK; y <= BOT; y += 2) ctx.lineTo(CX + side * hwBot(y), y);
-    }
-
-    function glass(rot) {
-      ctx.save();
-      ctx.translate(CX, NECK);
-      ctx.rotate(rot);
-      ctx.translate(-CX, -NECK);
-      // walls
-      ctx.strokeStyle = "#94a3b8";
-      ctx.lineWidth = 2.5;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      wallPath(-1);
-      wallPath(1);
-      ctx.stroke();
-      // wooden caps: rounded bars slightly wider than the bulb mouths
-      ctx.fillStyle = "#64748b";
-      const capW = WIDE * 2 + 12, capH = 5;
-      for (const y of [TOP - capH - 1, BOT + 1]) {
-        ctx.beginPath();
-        ctx.roundRect(CX - capW / 2, y, capW, capH, 2.5);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    // Sand at fraction f (0 = all top, 1 = all bottom). Smooth filled shapes,
-    // not rows: a pool with a funnel dip up top, a conical mound below, a
-    // continuous stream between them.
-    const INSET = 2.2; // keep sand just inside the glass walls
-    function sand(f) {
-      const grad = ctx.createLinearGradient(0, TOP, 0, BOT);
-      grad.addColorStop(0, "#fbbf24");
-      grad.addColorStop(1, "#d97706");
-      ctx.fillStyle = grad;
-
-      // Top pool: numerically find the surface height whose enclosed area is
-      // (1-f) of the initial fill (curved walls, no closed form).
-      const yFull = NECK - (NECK - TOP) * 0.62; // start ~60% full
-      const area = (yLimit) => {
-        let a = 0;
-        for (let y = NECK; y > yLimit; y -= 1) a += hwTop(y) * 2;
-        return a;
-      };
-      const target = area(yFull) * (1 - f);
-      let yS = NECK;
-      for (let a = 0; yS > yFull && a < target; yS -= 1) a += hwTop(yS) * 2;
-      const U = NECK - yS;
-      if (U > 1.5) {
-        const hwS = Math.max(0.5, hwTop(yS) - INSET);
-        const dip = Math.min(6, U * 0.45); // funnel dip toward the neck hole
-        ctx.beginPath();
-        ctx.moveTo(CX - hwS, yS);
-        ctx.quadraticCurveTo(CX, yS + dip, CX + hwS, yS); // concave surface
-        // side edges hug the curved wall down to the neck
-        for (let y = yS; y <= NECK - 1; y += 2) ctx.lineTo(CX + Math.max(0.5, hwTop(y) - INSET), y);
-        ctx.lineTo(CX, NECK);
-        for (let y = NECK - 1; y >= yS; y -= 2) ctx.lineTo(CX - Math.max(0.5, hwTop(y) - INSET), y);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      // Bottom mound: base pinned to the floor, conical top peaking at center.
-      const h = Math.pow(f, 0.7) * (BOT - NECK - 8) * 0.8; // fast early growth
-      if (h > 1) {
-        const yPeak = BOT - 2 - h;
-        const yEdge = BOT - 2 - h * 0.25; // sides sit lower than the peak
-        const hwE = Math.max(1, hwBot(yEdge) - INSET);
-        ctx.beginPath();
-        ctx.moveTo(CX - hwE, yEdge);
-        ctx.quadraticCurveTo(CX, yPeak - h * 0.15, CX + hwE, yEdge); // rounded peak
-        // sides follow the curved bowl down to the floor
-        for (let y = yEdge; y <= BOT - 2; y += 2) ctx.lineTo(CX + Math.max(1, hwBot(y) - INSET), y);
-        ctx.lineTo(CX - Math.max(1, hwBot(BOT - 2) - INSET), BOT - 2);
-        for (let y = BOT - 2; y >= yEdge; y -= 2) ctx.lineTo(CX - Math.max(1, hwBot(y) - INSET), y);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      // Continuous stream with a faint sway, neck to mound peak
-      if (f > 0 && f < 1) {
-        const yEnd = BOT - 3 - h;
-        ctx.beginPath();
-        ctx.moveTo(CX, NECK - 1);
-        for (let y = NECK; y <= yEnd; y += 3) {
-          ctx.lineTo(CX + Math.sin(y * 0.35 + Date.now() / 120) * 0.6, y);
-        }
-        ctx.lineWidth = 1.8;
-        ctx.strokeStyle = "#f59e0b";
-        ctx.stroke();
-      }
-    }
-
+  // ── Pause countdown ring ────────────────────────────────────────────
+  // Circular progress that empties over the real pause duration, with the
+  // remaining seconds in the center. Fades out when the pause ends.
+  const pauseRing = (() => {
+    const box = overlay.querySelector("#cge-ring");
+    const fg = overlay.querySelector("#cge-ring-fg");
+    const txt = overlay.querySelector("#cge-ring-text");
+    const CIRC = 194.8; // 2*pi*r for r=31
+    let timer = null;
     return {
       start(durationMs) {
-        if (anim) cancelAnimationFrame(anim);
-        cv.style.display = "block";
-        cv.style.opacity = "1";
-        cv.style.transition = "";
+        if (timer) clearInterval(timer);
+        box.style.display = "block";
+        box.style.opacity = "1";
+        box.style.transition = "";
         const t0 = Date.now();
         const tick = () => {
-          const f = Math.min(1, (Date.now() - t0) / durationMs);
-          ctx.clearRect(0, 0, W, H);
-          if (f < 1) {
-            sand(f); glass(0);
-            anim = requestAnimationFrame(tick);
-          } else {
-            // flip: quick rotation, then fade out
-            const flipT0 = Date.now();
-            const flip = () => {
-              const ft = Math.min(1, (Date.now() - flipT0) / 600);
-              ctx.clearRect(0, 0, W, H);
-              glass(ft * Math.PI);
-              if (ft < 1) anim = requestAnimationFrame(flip);
-              else {
-                ctx.clearRect(0, 0, W, H);
-                sand(0); glass(0); // flipped: full again, ready position
-                cv.style.transition = "opacity 1.2s";
-                cv.style.opacity = "0";
-                setTimeout(() => { cv.style.display = "none"; }, 1300);
-              }
-            };
-            flip();
+          const left = durationMs - (Date.now() - t0);
+          if (left <= 0) {
+            clearInterval(timer);
+            timer = null;
+            txt.textContent = "0";
+            fg.style.strokeDashoffset = CIRC;
+            box.style.transition = "opacity 0.8s";
+            box.style.opacity = "0";
+            setTimeout(() => { box.style.display = "none"; }, 900);
+            return;
           }
+          const f = left / durationMs;
+          fg.style.strokeDashoffset = String(CIRC * (1 - f));
+          const s = Math.ceil(left / 1000);
+          txt.textContent = s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : String(s);
         };
         tick();
+        timer = setInterval(tick, 250);
       },
       stop() {
-        if (anim) cancelAnimationFrame(anim);
-        cv.style.display = "none";
+        if (timer) clearInterval(timer);
+        timer = null;
+        box.style.display = "none";
       },
     };
   })();
@@ -375,13 +272,18 @@
 
   // Account badge, bottom left above the taskbar: shows which account this
   // run (and its cache) is bound to. z-index below the taskbar (100000) so
-  // the log console simply covers it when opened or resized.
+  // the log console covers it when opened, but it must clear the bar itself.
   {
     const badge = document.createElement("div");
     badge.id = "cge-acc";
-    badge.style.cssText = "position:fixed;left:12px;bottom:48px;z-index:99999;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:5px 10px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#64748b";
+    badge.style.cssText = "position:fixed;left:12px;bottom:0;z-index:99999;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:5px 10px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#64748b";
     badge.textContent = `account: ${accountId}`;
     overlay.appendChild(badge);
+    // sit just above the bar's real height (chips row can wrap on small screens)
+    const bar = overlay.querySelector("#cge-taskbar");
+    const place = () => { badge.style.bottom = bar.offsetHeight - (ui.logEl.style.display !== "none" ? ui.logEl.offsetHeight + 8 : 0) + 8 + "px"; };
+    place();
+    setInterval(place, 1000);
   }
 
   // ── API helper ──────────────────────────────────────────────────────
@@ -656,7 +558,7 @@
           const body = await resp.text().catch(() => "");
           ui.log(`HTTP ${resp.status} details, Retry-After: ${retryAfterRaw ?? "(none)"}, body: ${body.slice(0, 200) || "(empty)"}`);
           localStorage.setItem(LS_PAUSE, Date.now() + backoff);
-          hourglass.start(backoff);
+          pauseRing.start(backoff);
           ui.set(null, null, `Rate limited (HTTP ${resp.status}), pausing ${Math.round(backoff / 1000)}s...`);
           ui.log(`HTTP ${resp.status}, strike ${strikes} in 5min window, pause ${Math.round(backoff / 1000)}s (all tabs), delay now ${Math.round(d)}ms`);
         }
