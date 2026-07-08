@@ -1,3 +1,9 @@
+## v1.0.6 (2026-07-08)
+
+- v1.0.6
+- Treat 412 as retryable with backoff, add recovery sweep for failed conversations
+- chore: update CHANGELOG for v1.0.5 [skip ci]
+
 ## v1.0.5 (2026-07-08)
 
 - v1.0.5
