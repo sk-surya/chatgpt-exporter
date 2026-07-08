@@ -1035,8 +1035,85 @@
     ui.log(`Recovery sweep done: ${failedIdx.length - failed} recovered, ${failed} still failing`);
   }
 
-  // Conversations that never fetched (e.g. persistent 412 "stale", which the
-  // web app resolves via in-memory state we cannot replicate) get a clickable
+  // ── Browser-assist pass ─────────────────────────────────────────────
+  // Persistent 412 "stale" conversations load fine in the ChatGPT app,
+  // which resolves them via in-memory state we cannot replicate. So let the
+  // app do it: load each chat in a hidden same-origin iframe with a patched
+  // fetch, and capture the conversation JSON as the app receives it.
+  async function harvestViaIframe(cid, timeoutMs = 30000) {
+    return new Promise((resolve) => {
+      const frame = document.createElement("iframe");
+      frame.style.cssText = "position:fixed;width:0;height:0;border:0;visibility:hidden";
+      let settled = false;
+      const finish = (val) => {
+        if (settled) return;
+        settled = true;
+        frame.remove();
+        resolve(val);
+      };
+      setTimeout(() => finish(null), timeoutMs);
+      frame.addEventListener("load", () => {
+        try {
+          const win = frame.contentWindow;
+          const origFetch = win.fetch.bind(win);
+          win.fetch = async (input, init) => {
+            const resp = await origFetch(input, init);
+            try {
+              const url = typeof input === "string" ? input : input.url;
+              if (url && url.includes(`/backend-api/conversation/${cid}`) && !url.includes("/textdocs") && resp.ok) {
+                resp.clone().json().then((j) => { if (j && j.mapping) finish(j); }).catch(() => {});
+              }
+            } catch {}
+            return resp;
+          };
+        } catch (e) {
+          finish(null);
+        }
+      });
+      // load the shell first so our fetch patch is in place before the app
+      // navigates to the conversation and fires its request
+      frame.src = `/c/${cid}`;
+      document.body.appendChild(frame);
+    });
+  }
+
+  let assistRecovered = 0;
+  {
+    const assistIdx = [...downloaded.keys()].filter((i) => !downloaded[i]);
+    if (assistIdx.length && assistIdx.length < total) {
+      ui.log(`Browser-assist: loading ${assistIdx.length} stale conversations through the app (hidden iframe)`);
+      for (let n = 0; n < assistIdx.length; n++) {
+        const i = assistIdx[n];
+        const c = conversations[i];
+        ui.worker(0, `assist ${n + 1}/${assistIdx.length}`, "yellow");
+        ui.set(`Browser-assist: ${n + 1} of ${assistIdx.length}`, null, c.title || "Untitled");
+        const convo = await harvestViaIframe(c.id);
+        if (convo) {
+          await cachePut("convos", c.id, { convo, cachedUpdateTime: Date.now() });
+          const fname = `${sanitize(convo.title || c.title || "Untitled")}_${c.id.slice(0, 8)}`;
+          const fileRefs = extractFileReferences(convo);
+          totalFiles += fileRefs.length;
+          const fileMap = {};
+          fileRefs.forEach((ref, k) => {
+            ref.zipName = `${k}_${sanitize(ref.filename || "file")}`;
+            fileMap[ref.fileId] = `../files/${fname}/${ref.zipName}`;
+          });
+          zipEntries.push({ path: `json/${fname}.json`, data: JSON.stringify(convo, null, 2) });
+          zipEntries.push({ path: `markdown/${fname}.md`, data: toMarkdown(convo, fileMap) });
+          downloaded[i] = { fname, title: convo.title || c.title, convo, fileMap, fileRefs };
+          assistRecovered++;
+          ui.workerLog(0, `assist recovered "${(convo.title || "Untitled").slice(0, 50)}"`);
+        } else {
+          ui.workerLog(0, `assist failed for "${(c.title || "Untitled").slice(0, 50)}"`);
+        }
+        await sleep(1500); // gentle pacing, the app's own fetches count against the quota too
+      }
+      ui.log(`Browser-assist done: ${assistRecovered}/${assistIdx.length} recovered`);
+      ui.worker(0, "idle", "gray");
+    }
+  }
+
+  // Conversations that never fetched even via browser-assist get a clickable
   // report in the ZIP so nothing goes missing silently.
   const stillFailed = [...downloaded.keys()].filter((i) => !downloaded[i]).map((i) => conversations[i]);
   if (stillFailed.length) {
