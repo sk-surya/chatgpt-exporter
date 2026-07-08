@@ -75,8 +75,9 @@ jobs:
             echo
             git log --no-merges --pretty='- %s' $RANGE | grep -v '^- Co-Authored' || true
             echo
-            [ -f CHANGELOG.md ] && cat CHANGELOG.md
-          } > CHANGELOG.new && mv CHANGELOG.new CHANGELOG.md
+            cat CHANGELOG.md 2>/dev/null || true
+          } > CHANGELOG.new
+          mv CHANGELOG.new CHANGELOG.md
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md

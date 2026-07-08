@@ -30,7 +30,7 @@
   const overlay = document.createElement("div");
   overlay.id = "chatgpt-exporter-overlay";
   overlay.innerHTML = `
-    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:99999;
       display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
       <div style="background:#1e293b;border-radius:16px;padding:40px;max-width:560px;width:90%;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4);display:flex;gap:28px;align-items:center">
         <div style="flex:1;min-width:0">
