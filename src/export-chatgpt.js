@@ -593,16 +593,26 @@
   }
 
   // The web app proves it knows about pending server-side updates via the
-  // x-oai-is-pending-updates header (token from the __Secure-oai-is cookie).
-  // Without it, recently-active conversations 412 "stale" forever. Best
-  // effort: the cookie may be HttpOnly in some setups, then this is empty
-  // and those conversations keep failing like before.
+  // x-oai-is-pending-updates header. Captured requests show it sends a SET of
+  // ois1. tokens (more than just the __Secure-oai-is cookie value), which the
+  // app keeps in client-side storage. Without them, recently-active
+  // conversations 412 "stale" forever. Scan cookie + local/sessionStorage and
+  // send every token we can find.
   function pendingUpdatesHeader() {
+    const tokens = new Set();
+    const RX = /ois1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
     try {
-      const m = document.cookie.match(/(?:^|;\s*)__Secure-oai-is=([^;]+)/);
-      if (m) return { "x-oai-is-pending-updates": JSON.stringify({ v: 3, updates: [decodeURIComponent(m[1])] }) };
+      for (const m of decodeURIComponent(document.cookie).matchAll(RX)) tokens.add(m[0]);
     } catch {}
-    return {};
+    for (const store of [localStorage, sessionStorage]) {
+      try {
+        for (let i = 0; i < store.length; i++) {
+          const v = store.getItem(store.key(i)) || "";
+          if (v.includes("ois1.")) for (const m of v.matchAll(RX)) tokens.add(m[0]);
+        }
+      } catch {}
+    }
+    return tokens.size ? { "x-oai-is-pending-updates": JSON.stringify({ v: 3, updates: [...tokens] }) } : {};
   }
 
   async function apiGet(path) {
