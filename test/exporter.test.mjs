@@ -65,6 +65,7 @@ globalThis.indexedDB = {
             get: (k) => idbReq(idbStores[s].get(k)),
             put: (v, k) => idbStores[s].set(k, v),
             clear: () => idbStores[s].clear(),
+            count: () => idbReq(idbStores[s].size),
           }),
           set oncomplete(f) { setImmediate(f); },
           onerror: null,
