@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 (async () => {
-  const VERSION = "v1.0.7";
+  const VERSION = "v1.0.8";
   const API = "/backend-api";
   const PAGE_SIZE = 100;
   const DELAY = 1200; // base ms between requests, account-wide, human-ish pace; the site shares this quota
@@ -21,7 +21,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // Shared progress state for the ETA clock and partial-save button
-  const stats = { done: 0, total: 0, startedAt: 0, entries: null, recent: [] };
+  const stats = { done: 0, total: 0, startedAt: 0, entries: null, recent: [], phase: "text", phaseDone: 0, phaseTotal: 0, phaseRecent: [] };
   let requestRestart = null; // set once the download pass starts
 
   // ── UI overlay ──────────────────────────────────────────────────────
@@ -30,7 +30,7 @@
   const overlay = document.createElement("div");
   overlay.id = "chatgpt-exporter-overlay";
   overlay.innerHTML = `
-    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:99999;
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:99999;
       display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
       <div style="background:#1e293b;border-radius:16px;padding:40px;max-width:560px;width:90%;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4);display:flex;gap:28px;align-items:center">
         <div style="flex:1;min-width:0">
@@ -170,11 +170,25 @@
     log(msg) {
       this.logTo("global", "LOG", msg);
     },
-    done(msg) {
+    done(msg, rows) {
       this.status.textContent = msg;
       this.bar.style.width = "100%";
       this.bar.style.background = "#22c55e";
-      this.detail.textContent = "You can close this overlay by clicking anywhere.";
+      if (rows && rows.length) {
+        // stat list: [label, value, ok?] per row
+        this.detail.style.whiteSpace = "normal";
+        this.detail.style.overflow = "visible";
+        this.detail.innerHTML =
+          `<div style="display:flex;flex-direction:column;gap:4px;margin:4px 0 10px">` +
+          rows.map(([label, value, ok]) =>
+            `<div style="display:flex;justify-content:space-between;gap:16px;font-size:13px">` +
+            `<span style="color:#94a3b8">${label}</span>` +
+            `<span style="color:${ok === false ? "#f59e0b" : "#e2e8f0"};font-variant-numeric:tabular-nums">${value}</span></div>`
+          ).join("") +
+          `</div><span style="color:#64748b;font-size:12px">Click anywhere to close.</span>`;
+      } else {
+        this.detail.textContent = "You can close this overlay by clicking anywhere.";
+      }
       overlay.querySelector("div").style.cursor = "pointer";
       overlay.addEventListener("click", () => overlay.remove());
     },
@@ -396,20 +410,26 @@
   // includes every pause and throttle we actually hit, no rate model needed.
   const etaEl = overlay.querySelector("#cge-eta");
   setInterval(() => {
-    if (!stats.total || !stats.done || !stats.startedAt) return;
+    // Phase-aware: text pass uses the global counters; assist and file phases
+    // report their own queue progress and rate (their per-item costs differ
+    // wildly from the text pass, a shared average would lie).
+    const inPhase = stats.phase !== "text" && stats.phaseTotal > 0;
+    const done = inPhase ? stats.phaseDone : stats.done;
+    const total = inPhase ? stats.phaseTotal : stats.total;
+    const r = inPhase ? stats.phaseRecent : stats.recent;
+    if (!total || !done) return;
     // Rate from the last 20 completions only: a whole-run average is skewed
-    // by the instant cache-hit burst at the start and understates the ETA
-    // badly once the run reaches uncached conversations.
-    const r = stats.recent;
+    // by the instant cache-hit burst at the start.
     const remaining = r.length >= 5
-      ? ((r[r.length - 1] - r[0]) / (r.length - 1)) * (stats.total - stats.done)
-      : ((Date.now() - stats.startedAt) / stats.done) * (stats.total - stats.done);
+      ? ((r[r.length - 1] - r[0]) / (r.length - 1)) * (total - done)
+      : stats.startedAt ? ((Date.now() - stats.startedAt) / done) * (total - done) : 0;
     const fmt = (ms) => {
       const m = Math.round(ms / 60000);
       return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
     };
     const doneAt = new Date(Date.now() + remaining);
-    etaEl.textContent = `${stats.done}/${stats.total}, ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
+    const label = { assist: "assist ", files: "files " }[stats.phase] || "";
+    etaEl.textContent = `${label}${done}/${total}, ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
   }, 1000);
 
   // Partial save (top left): zips whatever is downloaded so far, any time.
@@ -794,7 +814,10 @@
 
       if (msg.metadata?.attachments) {
         for (const att of msg.metadata.attachments) {
-          if (att.id && !seen.has(att.id)) {
+          // Skip per-page image sub-references (id like "<hash>#file_...#p_8.jpg"):
+          // they are not independently downloadable and the server 422s them.
+          // The parent file (plain file_/file- id) is referenced separately.
+          if (att.id && !att.id.includes("#p_") && !seen.has(att.id)) {
             seen.add(att.id);
             refs.push({ fileId: att.id, filename: att.name || "attachment", type: "attachment" });
           }
@@ -805,7 +828,7 @@
         for (const cit of msg.metadata.citations) {
           const fileId = cit.metadata?.file_id || cit.file_id;
           const title = cit.metadata?.title || cit.title || "citation";
-          if (fileId && !seen.has(fileId)) {
+          if (fileId && !fileId.includes("#p_") && !seen.has(fileId)) {
             seen.add(fileId);
             refs.push({ fileId, filename: title, type: "citation" });
           }
@@ -1119,17 +1142,35 @@
     const assistIdx = [...downloaded.keys()].filter((i) => !downloaded[i]);
     if (assistIdx.length && assistIdx.length < total) {
       ui.log(`Browser-assist: navigating the app to ${assistIdx.length} stale conversations (SPA capture)`);
+      ui.set(`Browser-assist: 0 of ${assistIdx.length}`, 0, "");
+      stats.phase = "assist";
+      stats.phaseDone = 0;
+      stats.phaseTotal = assistIdx.length;
+      stats.phaseRecent = [];
       for (let n = 0; n < assistIdx.length; n++) {
         const i = assistIdx[n];
         const c = conversations[i];
         ui.worker(0, `assist ${n + 1}/${assistIdx.length}`, "yellow");
-        ui.set(`Browser-assist: ${n + 1} of ${assistIdx.length}`, null, c.title || "Untitled");
+        ui.set(`Browser-assist: ${n + 1} of ${assistIdx.length}`, Math.round(((n + 1) / assistIdx.length) * 100), c.title || "Untitled");
+        stats.phase = "assist";
+        stats.phaseDone = n + 1;
+        stats.phaseTotal = assistIdx.length;
+        stats.phaseRecent.push(Date.now());
+        if (stats.phaseRecent.length > 20) stats.phaseRecent.shift();
         // An iframe load fires several backend-api requests (session, models,
         // the conversation), all against the shared account quota. Reserve
         // multiple pacer slots so the assist pass obeys the same throttle and
         // pause windows as the workers.
         for (let s = 0; s < 3; s++) await throttle();
-        const convo = await harvestViaNavigation(c.id);
+        // First visit often 412s inside the app too, which syncs its pending
+        // updates and retries; a second navigation usually lands it. Two
+        // tries with a generous window each.
+        let convo = await harvestViaNavigation(c.id, 35000);
+        if (!convo) {
+          ui.workerLog(0, `assist retrying "${(c.title || "Untitled").slice(0, 40)}"`);
+          await sleep(2000);
+          convo = await harvestViaNavigation(c.id, 35000);
+        }
         if (convo) {
           await cachePut("convos", c.id, { convo, cachedUpdateTime: Date.now() });
           const fname = `${sanitize(convo.title || c.title || "Untitled")}_${c.id.slice(0, 8)}`;
@@ -1150,6 +1191,7 @@
         }
       }
       ui.log(`Browser-assist done: ${assistRecovered}/${assistIdx.length} recovered`);
+      stats.phase = "text";
       ui.worker(0, "idle", "gray");
     }
   }
@@ -1178,24 +1220,36 @@
   const fileQueue = succeededConvos.flatMap((d) => d.fileRefs.map((ref) => ({ d, ref })));
   let filesDone = 0;
   if (fileQueue.length) {
-    ui.log(`Starting file pass: ${fileQueue.length} files across ${succeededConvos.filter((d) => d.fileRefs.length).length} conversations`);
+    const byType = {};
+    for (const { ref } of fileQueue) byType[ref.type] = (byType[ref.type] || 0) + 1;
+    ui.log(`Starting file pass: ${fileQueue.length} files across ${succeededConvos.filter((d) => d.fileRefs.length).length} conversations (${Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(", ")})`);
+    ui.set(`Downloading files: 0 of ${fileQueue.length}`, 0, "");
+    stats.phase = "files";
+    stats.phaseDone = 0;
+    stats.phaseTotal = fileQueue.length;
+    stats.phaseRecent = [];
     let nextFile = 0;
     await Promise.all(
       Array.from({ length: Math.min(CONCURRENCY, fileQueue.length) }, async (_, w) => {
         while (nextFile < fileQueue.length) {
           const { d, ref } = fileQueue[nextFile++];
-          ui.worker(w, `file ${filesDone + 1}/${fileQueue.length}`, "green");
+          const shortName = (ref.filename || ref.fileId).slice(0, 32);
+          ui.worker(w, `${shortName}`, "green");
           try {
             const { data } = await downloadFile(ref.fileId, ref.filename);
             // stored under the name pass 1 already linked in markdown/HTML
             zipEntries.push({ path: `files/${d.fname}/${ref.zipName}`, data });
+            ui.workerLog(w, `ok ${ref.filename || ref.fileId} in "${d.title.slice(0, 40)}"`);
           } catch (e) {
             failedFiles++;
             delete d.fileMap[ref.fileId]; // dead link -> render as plain [image]/no link in HTML pass
-            ui.workerLog(w, `file ${ref.fileId} failed (${e.message}) in "${d.title.slice(0, 40)}"`);
+            ui.workerLog(w, `file ${ref.filename || ref.fileId} failed (${e.message}) in "${d.title.slice(0, 40)}"`);
           }
           filesDone++;
-          ui.set(`Downloading files: ${filesDone} of ${fileQueue.length}`, Math.round((filesDone / fileQueue.length) * 100), d.title);
+          stats.phaseDone = filesDone;
+          stats.phaseRecent.push(Date.now());
+          if (stats.phaseRecent.length > 20) stats.phaseRecent.shift();
+          ui.set(`Downloading files: ${filesDone} of ${fileQueue.length}`, Math.round((filesDone / fileQueue.length) * 100), `${ref.filename || ref.fileId} - ${d.title}`);
         }
         ui.worker(w, "idle", "gray");
       })
@@ -1205,6 +1259,7 @@
 
   // ── Pass 3: Generate Markdown + HTML (needs final file paths) ───────
 
+  stats.phase = "text"; // ETA back to totals for the final phases
   ui.set("Generating Markdown and HTML...", 100);
   const allConvos = succeededConvos.map((d) => ({ fname: d.fname, title: d.title }));
 
@@ -1250,12 +1305,13 @@
   URL.revokeObjectURL(a.href);
 
   const succeeded = total - failed;
-  let doneMsg = `Done! Exported ${succeeded}/${total} conversations.`;
-  if (failed) doneMsg += ` (${failed} failed)`;
-  if (totalFiles) doneMsg += ` ${totalFiles - failedFiles}/${totalFiles} files downloaded.`;
-  if (cacheHits || fileCacheHits) doneMsg += ` (${cacheHits} conversations + ${fileCacheHits} files from cache)`;
+  const rows = [["Conversations", `${succeeded} / ${total}`, failed === 0]];
+  if (totalFiles) rows.push(["Files", `${totalFiles - failedFiles} / ${totalFiles}`, failedFiles === 0]);
+  if (failed) rows.push(["Unavailable (see stale-conversations.md)", String(failed), false]);
+  if (failedFiles) rows.push(["Files expired server-side", String(failedFiles), false]);
+  if (cacheHits || fileCacheHits) rows.push(["Served from cache", `${cacheHits} conv, ${fileCacheHits} files`, true]);
   localStorage.removeItem("cge:alive");
-  ui.done(doneMsg);
+  ui.done("Export complete", rows);
 
   // ── Markdown converter ──────────────────────────────────────────────
 
