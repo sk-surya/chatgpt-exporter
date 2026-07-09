@@ -48,21 +48,22 @@ globalThis.document = {
   addEventListener: () => {},
   activeElement: null,
 };
+// Plain stubs. The exporter's SPA-capture block reassigns window.fetch; with
+// a plain data property that only touches this stub object, while bare
+// fetch() calls keep hitting the mock below, which is exactly what we want
+// (the assist phase never runs in the mock scenario).
 globalThis.window = { innerHeight: 900, fetch: (...a) => globalThis.fetch(...a), dispatchEvent: () => {}, addEventListener: () => {} };
 globalThis.history = { pushState: () => {} };
 globalThis.location = { pathname: "/", search: "" };
 globalThis.PopStateEvent = class {};
-// keep window.fetch and globalThis.fetch in sync when the script patches it
-Object.defineProperty(globalThis.window, "fetch", {
-  get: () => globalThis.fetch,
-  set: (f) => { globalThis.fetch = f; },
-});
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 100);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 // in-memory IndexedDB stub: same API shape, backed by Maps
 const idbStores = { convos: new Map(), files: new Map(), meta: new Map() };
 function idbReq(result) { const r = { result }; setImmediate(() => r.onsuccess?.()); return r; }
 globalThis.indexedDB = {
+  databases: async () => [],
+  deleteDatabase: () => {},
   open: () => {
     const r = {
       result: {
@@ -107,7 +108,11 @@ globalThis.localStorage = {
   getItem: (k) => lsStore.get(k) ?? null,
   setItem: (k, v) => lsStore.set(k, String(v)),
   removeItem: (k) => lsStore.delete(k),
+  get length() { return lsStore.size; },
+  key: (i) => [...lsStore.keys()][i] ?? null,
 };
+// Node < 26 has no sessionStorage global; the exporter iterates it for ois1 tokens
+globalThis.sessionStorage = { length: 0, key: () => null, getItem: () => null, setItem: () => {}, removeItem: () => {} };
 globalThis.btoa = (s) => Buffer.from(s, "binary").toString("base64");
 globalThis.atob = (s) => Buffer.from(s, "base64").toString("binary");
 
