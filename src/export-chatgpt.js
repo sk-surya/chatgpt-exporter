@@ -21,7 +21,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // Shared progress state for the ETA clock and partial-save button
-  const stats = { done: 0, total: 0, startedAt: 0, entries: null, recent: [] };
+  const stats = { done: 0, total: 0, startedAt: 0, entries: null, recent: [], phase: "text", phaseDone: 0, phaseTotal: 0, phaseRecent: [] };
   let requestRestart = null; // set once the download pass starts
 
   // ── UI overlay ──────────────────────────────────────────────────────
@@ -30,7 +30,7 @@
   const overlay = document.createElement("div");
   overlay.id = "chatgpt-exporter-overlay";
   overlay.innerHTML = `
-    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:99999;
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:99999;
       display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
       <div style="background:#1e293b;border-radius:16px;padding:40px;max-width:560px;width:90%;color:#e2e8f0;box-shadow:0 25px 50px rgba(0,0,0,0.4);display:flex;gap:28px;align-items:center">
         <div style="flex:1;min-width:0">
@@ -396,20 +396,26 @@
   // includes every pause and throttle we actually hit, no rate model needed.
   const etaEl = overlay.querySelector("#cge-eta");
   setInterval(() => {
-    if (!stats.total || !stats.done || !stats.startedAt) return;
+    // Phase-aware: text pass uses the global counters; assist and file phases
+    // report their own queue progress and rate (their per-item costs differ
+    // wildly from the text pass, a shared average would lie).
+    const inPhase = stats.phase !== "text" && stats.phaseTotal > 0;
+    const done = inPhase ? stats.phaseDone : stats.done;
+    const total = inPhase ? stats.phaseTotal : stats.total;
+    const r = inPhase ? stats.phaseRecent : stats.recent;
+    if (!total || !done) return;
     // Rate from the last 20 completions only: a whole-run average is skewed
-    // by the instant cache-hit burst at the start and understates the ETA
-    // badly once the run reaches uncached conversations.
-    const r = stats.recent;
+    // by the instant cache-hit burst at the start.
     const remaining = r.length >= 5
-      ? ((r[r.length - 1] - r[0]) / (r.length - 1)) * (stats.total - stats.done)
-      : ((Date.now() - stats.startedAt) / stats.done) * (stats.total - stats.done);
+      ? ((r[r.length - 1] - r[0]) / (r.length - 1)) * (total - done)
+      : stats.startedAt ? ((Date.now() - stats.startedAt) / done) * (total - done) : 0;
     const fmt = (ms) => {
       const m = Math.round(ms / 60000);
       return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
     };
     const doneAt = new Date(Date.now() + remaining);
-    etaEl.textContent = `${stats.done}/${stats.total}, ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
+    const label = { assist: "assist ", files: "files " }[stats.phase] || "";
+    etaEl.textContent = `${label}${done}/${total}, ~${fmt(remaining)} left (ETA ${doneAt.toTimeString().slice(0, 5)})`;
   }, 1000);
 
   // Partial save (top left): zips whatever is downloaded so far, any time.
@@ -1119,17 +1125,35 @@
     const assistIdx = [...downloaded.keys()].filter((i) => !downloaded[i]);
     if (assistIdx.length && assistIdx.length < total) {
       ui.log(`Browser-assist: navigating the app to ${assistIdx.length} stale conversations (SPA capture)`);
+      ui.set(`Browser-assist: 0 of ${assistIdx.length}`, 0, "");
+      stats.phase = "assist";
+      stats.phaseDone = 0;
+      stats.phaseTotal = assistIdx.length;
+      stats.phaseRecent = [];
       for (let n = 0; n < assistIdx.length; n++) {
         const i = assistIdx[n];
         const c = conversations[i];
         ui.worker(0, `assist ${n + 1}/${assistIdx.length}`, "yellow");
-        ui.set(`Browser-assist: ${n + 1} of ${assistIdx.length}`, null, c.title || "Untitled");
+        ui.set(`Browser-assist: ${n + 1} of ${assistIdx.length}`, Math.round(((n + 1) / assistIdx.length) * 100), c.title || "Untitled");
+        stats.phase = "assist";
+        stats.phaseDone = n + 1;
+        stats.phaseTotal = assistIdx.length;
+        stats.phaseRecent.push(Date.now());
+        if (stats.phaseRecent.length > 20) stats.phaseRecent.shift();
         // An iframe load fires several backend-api requests (session, models,
         // the conversation), all against the shared account quota. Reserve
         // multiple pacer slots so the assist pass obeys the same throttle and
         // pause windows as the workers.
         for (let s = 0; s < 3; s++) await throttle();
-        const convo = await harvestViaNavigation(c.id);
+        // First visit often 412s inside the app too, which syncs its pending
+        // updates and retries; a second navigation usually lands it. Two
+        // tries with a generous window each.
+        let convo = await harvestViaNavigation(c.id, 35000);
+        if (!convo) {
+          ui.workerLog(0, `assist retrying "${(c.title || "Untitled").slice(0, 40)}"`);
+          await sleep(2000);
+          convo = await harvestViaNavigation(c.id, 35000);
+        }
         if (convo) {
           await cachePut("convos", c.id, { convo, cachedUpdateTime: Date.now() });
           const fname = `${sanitize(convo.title || c.title || "Untitled")}_${c.id.slice(0, 8)}`;
@@ -1150,6 +1174,7 @@
         }
       }
       ui.log(`Browser-assist done: ${assistRecovered}/${assistIdx.length} recovered`);
+      stats.phase = "text";
       ui.worker(0, "idle", "gray");
     }
   }
@@ -1179,6 +1204,11 @@
   let filesDone = 0;
   if (fileQueue.length) {
     ui.log(`Starting file pass: ${fileQueue.length} files across ${succeededConvos.filter((d) => d.fileRefs.length).length} conversations`);
+    ui.set(`Downloading files: 0 of ${fileQueue.length}`, 0, "");
+    stats.phase = "files";
+    stats.phaseDone = 0;
+    stats.phaseTotal = fileQueue.length;
+    stats.phaseRecent = [];
     let nextFile = 0;
     await Promise.all(
       Array.from({ length: Math.min(CONCURRENCY, fileQueue.length) }, async (_, w) => {
@@ -1195,6 +1225,9 @@
             ui.workerLog(w, `file ${ref.fileId} failed (${e.message}) in "${d.title.slice(0, 40)}"`);
           }
           filesDone++;
+          stats.phaseDone = filesDone;
+          stats.phaseRecent.push(Date.now());
+          if (stats.phaseRecent.length > 20) stats.phaseRecent.shift();
           ui.set(`Downloading files: ${filesDone} of ${fileQueue.length}`, Math.round((filesDone / fileQueue.length) * 100), d.title);
         }
         ui.worker(w, "idle", "gray");
@@ -1205,6 +1238,7 @@
 
   // ── Pass 3: Generate Markdown + HTML (needs final file paths) ───────
 
+  stats.phase = "text"; // ETA back to totals for the final phases
   ui.set("Generating Markdown and HTML...", 100);
   const allConvos = succeededConvos.map((d) => ({ fname: d.fname, title: d.title }));
 
