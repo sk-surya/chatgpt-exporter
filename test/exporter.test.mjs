@@ -100,6 +100,9 @@ globalThis.indexedDB = {
 globalThis.URL.createObjectURL = (blob) => { zipBlob = blob; return "blob:fake"; };
 globalThis.URL.revokeObjectURL = () => {};
 const lsStore = new Map();
+// short min-pause so the injected 429's pause doesn't dominate the test;
+// keys are account-scoped and the mock session has no user id -> "default"
+lsStore.set("cge:default:minPauseMs", "5000");
 globalThis.localStorage = {
   getItem: (k) => lsStore.get(k) ?? null,
   setItem: (k, v) => lsStore.set(k, String(v)),
@@ -171,7 +174,7 @@ globalThis.fetch = async (url, options = {}) => {
 const src = readFileSync(process.argv[2], "utf8");
 await eval(`(async () => { ${src} })`)();
 // the exporter is itself an async IIFE; poll until the ZIP lands (429 recovery can take a while)
-for (let waited = 0; !zipBlob && waited < 180000; waited += 500) {
+for (let waited = 0; !zipBlob && waited < 300000; waited += 500) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
