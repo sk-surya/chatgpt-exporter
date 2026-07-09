@@ -48,7 +48,15 @@ globalThis.document = {
   addEventListener: () => {},
   activeElement: null,
 };
-globalThis.window = { innerHeight: 900 };
+globalThis.window = { innerHeight: 900, fetch: (...a) => globalThis.fetch(...a), dispatchEvent: () => {} };
+globalThis.history = { pushState: () => {} };
+globalThis.location = { pathname: "/", search: "" };
+globalThis.PopStateEvent = class {};
+// keep window.fetch and globalThis.fetch in sync when the script patches it
+Object.defineProperty(globalThis.window, "fetch", {
+  get: () => globalThis.fetch,
+  set: (f) => { globalThis.fetch = f; },
+});
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 100);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 // in-memory IndexedDB stub: same API shape, backed by Maps
