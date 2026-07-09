@@ -176,6 +176,13 @@ await eval(`(async () => { ${src} })`)();
 // the exporter is itself an async IIFE; poll until the ZIP lands (429 recovery can take a while)
 for (let waited = 0; !zipBlob && waited < 300000; waited += 500) {
   await new Promise((r) => setTimeout(r, 500));
+  if (waited > 0 && waited % 30000 === 0) {
+    console.log(`[harness] still waiting (${waited / 1000}s), requests so far: ${requestLog.length}, last: ${requestLog[requestLog.length - 1] || "(none)"}`);
+  }
+}
+if (!zipBlob) {
+  console.log(`[harness] TIMED OUT. ${requestLog.length} requests total. Last 10:`);
+  for (const u of requestLog.slice(-10)) console.log("  " + u);
 }
 
 // ── Assertions ────────────────────────────────────────────────────────
