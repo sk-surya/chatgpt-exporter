@@ -141,13 +141,13 @@ async function main() {
   if (!opts.mappingOnly) {
     console.log('\n── Indexing conversations ──');
     const db = openStore(dataDir);
-    const { added, updated, total } = indexFromDisk(db, dataDir);
+    const { added, updated, skipped, total } = indexFromDisk(db, dataDir);
     const stats = getStats(db);
 
     if (total > 0) {
-      console.log(`  New: ${added}, Updated: ${updated}, Total indexed: ${stats.conversations}`);
+      console.log(`  New: ${added}, Updated: ${updated}, Skipped: ${skipped !== undefined ? skipped : 0}, Total: ${stats.conversations}`);
     } else {
-      console.log(`  All ${stats.conversations} conversations already indexed.`);
+      console.log(`  All ${stats.conversations} conversations already indexed (${skipped} files unchanged).`);
     }
     console.log(`  On disk: ${stats.onDisk}`);
   }
